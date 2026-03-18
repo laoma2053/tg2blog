@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # MySQL 数据库服务
+  db:
+    image: mysql:8.0
+    container_name: tg2blog_db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      TZ: Asia/Shanghai  # 设置时区为上海
+    ports:
+      - "3307:3306"  # 数据库端口映射（改为3307避免冲突）
+    volumes:
+      - mysql_data:/var/lib/mysql  # 数据持久化
+    networks:
+      - tg2blog_network
+    restart: always  # 自动重启
+    healthcheck:  # 健康检查
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # tg2blog 应用服务
+  app:
+    build: .
+    container_name: tg2blog_app
+    depends_on:
+      db:
+        condition: service_healthy  # 等待数据库就绪
+    env_file:
+      - .env  # 加载环境变量
+    environment:
+      - DB_HOST=db  # 数据库主机名（容器内部使用服务名）
+      - TZ=Asia/Shanghai  # 设置时区为上海
+    networks:
+      - tg2blog_network
+    restart: always  # 自动重启
+    logging:  # 日志配置
+      driver: "json-file"
+      options:
+        max-size: "10m"  # 单个日志文件最大 10MB
+        max-file: "3"    # 保留最近 3 个日志文件
+
+# 网络配置
+networks:
+  tg2blog_network:
+    driver: bridge
+
+# 数据卷配置
+volumes:
+  mysql_data:
+    driver: local  # 本地存储
