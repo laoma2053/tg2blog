@@ -1,9 +1,0 @@
-services:
-  tg2blog:
-    build: .
-    container_name: tg2blog
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - ./data:/data
