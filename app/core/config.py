@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     BACKUP_UC_URL: str
     BACKUP_XUNLEI_URL: str
 
+    # 重试配置
+    RETRY_INTERVAL_MINUTES: int = 30  # 重试间隔（分钟）
+    RETRY_BATCH_SIZE: int = 10  # 每次重试的资源数量
+
     @property
     def database_url(self) -> str:
         """生成数据库连接 URL"""

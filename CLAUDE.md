@@ -90,6 +90,12 @@ python scripts/auth_telegram.py
 python scripts/run_listener.py
 ```
 
+### 重试失败的发布
+```bash
+# 重试 pending 状态的资源（WordPress 发布失败时会保留资源为 pending）
+python scripts/retry_pending_resources.py
+```
+
 ### Docker 运行
 ```bash
 # 构建镜像

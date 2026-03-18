@@ -96,12 +96,16 @@ def process_message(db: Session, message: TelegramIncomingMessage) -> ProcessRes
                 resource_id=existing_resource.id
             )
 
-        # 10. 创建资源
+        # 10. 创建资源（状态为 pending）
         resource = create_resource(db, candidate)
+        resource.status = 'pending'
         logger.info(f"✅ 资源创建成功: resource_id={resource.id}")
 
         # 11. 保存资源链接
         save_resource_links(db, resource.id, fingerprints)
+
+        # 提交阶段一：确保消息和资源已保存
+        db.commit()
 
         # 12. 构造文章
         slug = build_slug(normalized.canonical_title)
@@ -119,28 +123,42 @@ def process_message(db: Session, message: TelegramIncomingMessage) -> ProcessRes
 
         payload = build_wordpress_payload(candidate, slug, content_html)
 
-        # 13. 发布 WordPress
-        wp_result = publish_post(payload)
+        # 13. 发布 WordPress（允许失败）
+        try:
+            wp_result = publish_post(payload)
 
-        # 14. 保存文章记录
-        article = Article(
-            resource_id=resource.id,
-            wp_post_id=wp_result["id"],
-            wp_slug=wp_result["slug"],
-            title_published=payload.title
-        )
-        db.add(article)
-        db.commit()
+            # 14. 保存文章记录
+            article = Article(
+                resource_id=resource.id,
+                wp_post_id=wp_result["id"],
+                wp_slug=wp_result["slug"],
+                title_published=payload.title,
+                status='published'
+            )
+            db.add(article)
 
-        logger.info(f"🎉 文章发布成功: article_id={article.id}, wp_post_id={wp_result['id']}")
+            # 更新资源状态为已发布
+            resource.status = 'published'
+            db.commit()
 
-        # 15. 返回结果
-        return ProcessResult(
-            status=STATUS_PUBLISHED,
-            resource_id=resource.id,
-            article_id=article.id,
-            wp_post_id=wp_result["id"]
-        )
+            logger.info(f"🎉 文章发布成功: article_id={article.id}, wp_post_id={wp_result['id']}")
+
+            # 15. 返回结果
+            return ProcessResult(
+                status=STATUS_PUBLISHED,
+                resource_id=resource.id,
+                article_id=article.id,
+                wp_post_id=wp_result["id"]
+            )
+
+        except Exception as wp_error:
+            logger.error(f"⚠️ WordPress 发布失败，资源已保存待重试: resource_id={resource.id}, error={str(wp_error)}")
+            # 资源保持 pending 状态，等待后续重试
+            return ProcessResult(
+                status=STATUS_ERROR,
+                reason=f"wp_publish_failed: {str(wp_error)}",
+                resource_id=resource.id
+            )
 
     except Exception as e:
         logger.error(f"❌ 处理消息失败: {str(e)}", exc_info=True)

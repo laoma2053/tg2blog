@@ -1,4 +1,5 @@
 """Telegram 频道监听器"""
+import asyncio
 from telethon import TelegramClient, events
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -19,17 +20,36 @@ class TelegramListener:
             settings.TG_API_HASH
         )
         self.channels = settings.tg_channels_list
+        self._retry_task = None
 
     async def start(self):
         """启动监听器"""
         await self.client.start()
         logger.info(f"🚀 Telegram 客户端已启动，监听频道: {self.channels}")
 
+        # 启动后台重试任务
+        self._retry_task = asyncio.create_task(self._retry_loop())
+        logger.info(f"⏰ 后台重试任务已启动，间隔: {settings.RETRY_INTERVAL_MINUTES} 分钟")
+
         @self.client.on(events.NewMessage(chats=self.channels))
         async def handler(event):
             await self._handle_message(event)
 
         await self.client.run_until_disconnected()
+
+    async def _retry_loop(self):
+        """后台重试循环"""
+        from scripts.retry_pending_resources import retry_pending_resources
+
+        while True:
+            try:
+                await asyncio.sleep(settings.RETRY_INTERVAL_MINUTES * 60)
+                logger.info("🔄 开始执行后台重试任务")
+                stats = retry_pending_resources(limit=settings.RETRY_BATCH_SIZE)
+                if stats["total"] > 0:
+                    logger.info(f"📊 重试完成: 成功={stats['success']}, 失败={stats['failed']}")
+            except Exception as e:
+                logger.error(f"❌ 后台重试任务异常: {str(e)}", exc_info=True)
 
     async def _handle_message(self, event):
         """处理新消息"""
