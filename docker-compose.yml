@@ -1,0 +1,17 @@
+services:
+  tg2blog:
+    build: .
+    container_name: tg2blog
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    env_file:
+      - .env
+    volumes:
+      # Telethon session + SQLite 均持久化到宿主机 ./data 目录
+      - ./data:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
