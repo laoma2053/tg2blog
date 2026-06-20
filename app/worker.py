@@ -91,7 +91,7 @@ async def _process(
         return
 
     # 2. 广告过滤
-    if filter_mod.should_block(msg.text, cfg):
+    if filter_mod.should_block(msg.text):
         logger.info("🚫 广告过滤 | channel=%s msg_id=%d", msg.channel, msg.msg_id)
         repo.save_msg(conn, msg.channel, msg.msg_id, msg.msg_date, msg.text, "", is_ad=True)
         return

@@ -1,53 +1,57 @@
 """
 广告过滤与文本清洗模块。
+规则从项目根目录的 config.yaml 加载，修改后重启容器即可生效。
 
-should_block()：命中则丢弃整条消息（关键词 + 正则黑名单）。
-clean_text()  ：保留消息但清洗推广内容（去链接行、尾部导流等），
-               在解析前调用，避免干扰片名/集数提取。
+should_block()：命中即丢弃整条消息。
+clean_text()  ：清洗推广内容后交给解析器，原始文本仍入库。
 """
 from __future__ import annotations
 
+import logging
 import re
+from pathlib import Path
 
-from .config import Config
+import yaml
 
-# ── 阻断规则（命中即丢弃）────────────────────────────────────────────────────
-_BLOCK_RES = [re.compile(p, re.IGNORECASE) for p in [
-    r"telegram\.me/",
-    r"t\.me/",
-]]
+logger = logging.getLogger(__name__)
 
-# ── 清洗规则（保留消息，删除特定行/片段）────────────────────────────────────
-# 按顺序执行，每条为 (compiled_regex, replacement)
-_CLEAN_RULES: list[tuple[re.Pattern, str]] = [
-    # 删除"链接/阿里/夸克/百度：https://..."整行
-    (re.compile(r"(?m)^(?:链接|阿里|夸克|百度)[:：]\s*https?://\S+\s*$"), ""),
-    # 删除"📤 资源链接：..."整行
-    (re.compile(r"(?m)^📤\s*资源链接[:：].*$"), ""),
-    # 删除"🍟 投稿人：..."到字符串末尾（尾部导流块）
-    (re.compile(r"(?s)🍟\s*投稿人[：:].*$"), ""),
-    # 删除所有剩余 http/https 链接
-    (re.compile(r"https?://\S+", re.IGNORECASE), ""),
-    # 收尾：清理多余空行（超过2个连续空行压缩为1个）
-    (re.compile(r"\n{3,}"), "\n\n"),
-]
+# config.yaml 与 app/ 同级（项目根目录）
+_YAML_PATH = Path(__file__).parent.parent / "config.yaml"
 
 
-def should_block(text: str, cfg: Config) -> bool:
-    """
-    返回 True 表示整条消息应丢弃，不进入 pipeline。
-    优先级：正则黑名单 > 关键词黑名单。
-    """
+def _load() -> dict:
+    """加载并编译 config.yaml 中的过滤规则，文件不存在时返回空规则。"""
+    if not _YAML_PATH.exists():
+        logger.warning("⚠️  config.yaml 不存在，过滤规则为空 | path=%s", _YAML_PATH)
+        return {"block_keywords": [], "block_regex": [], "clean_rules": []}
+    with _YAML_PATH.open(encoding="utf-8") as f:
+        return (yaml.safe_load(f) or {}).get("filter", {})
+
+
+def _compile(cfg: dict) -> tuple[list[str], list[re.Pattern], list[tuple[re.Pattern, str]]]:
+    keywords = cfg.get("block_keywords") or []
+    block_res = [re.compile(p) for p in (cfg.get("block_regex") or [])]
+    clean_rules = []
+    for rule in cfg.get("clean_rules") or []:
+        flags = re.IGNORECASE if "i" in (rule.get("flags") or "") else 0
+        clean_rules.append((re.compile(rule["pattern"], flags), rule.get("repl", "")))
+    return keywords, block_res, clean_rules
+
+
+# 模块加载时编译一次（重启容器即重新加载）
+_cfg = _load()
+_BLOCK_KEYWORDS, _BLOCK_RES, _CLEAN_RULES = _compile(_cfg)
+
+
+def should_block(text: str) -> bool:
+    """命中关键词或正则黑名单则返回 True，整条消息丢弃。"""
     if any(r.search(text) for r in _BLOCK_RES):
         return True
-    return any(kw in text for kw in cfg.ad_keywords)
+    return any(kw in text for kw in _BLOCK_KEYWORDS)
 
 
 def clean_text(text: str) -> str:
-    """
-    清洗消息文本：去除推广行、网盘链接、尾部导流信息。
-    返回清洗后的文本供解析器使用，原始文本仍存入数据库。
-    """
+    """按 clean_rules 顺序清洗文本，返回供解析器使用的干净文本。"""
     for pattern, repl in _CLEAN_RULES:
         text = pattern.sub(repl, text)
     return text.strip()

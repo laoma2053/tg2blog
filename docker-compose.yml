@@ -10,6 +10,8 @@ services:
     volumes:
       # Telethon session + SQLite 均持久化到宿主机 ./data 目录
       - ./data:/data
+      # 只读挂载配置文件，修改后重启容器即生效，无需重建镜像
+      - ./config.yaml:/app/config.yaml:ro
     logging:
       driver: "json-file"
       options:

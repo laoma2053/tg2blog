@@ -61,10 +61,6 @@ class Config(BaseSettings):
     # 发布成功默认不通知，失败始终通知
     notify_on_success: bool = Field(default=False)
 
-    # ── 广告过滤 ──────────────────────────────────────────────────────────────
-    # 消息包含任一关键词，或含 t.me/ 链接，则判定为广告跳过
-    ad_keywords: list[str] = Field(default_factory=list, description="广告关键词黑名单，逗号分隔")
-
     # ── 运行时 ────────────────────────────────────────────────────────────────
     db_path: str = Field(default="/data/db/tg2blog.sqlite")
     log_level: str = Field(default="INFO")
@@ -74,7 +70,7 @@ class Config(BaseSettings):
 
     # ── validators ────────────────────────────────────────────────────────────
 
-    @field_validator("tg_channels", "ad_keywords", mode="before")
+    @field_validator("tg_channels", mode="before")
     @classmethod
     def _split_csv(cls, v: str | list) -> list[str]:
         """将逗号分隔字符串转换为列表"""
