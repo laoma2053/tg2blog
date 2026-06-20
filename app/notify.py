@@ -14,6 +14,13 @@ from .config import Config
 logger = logging.getLogger(__name__)
 
 
+async def send_blocked(reason: str, cfg: Config) -> None:
+    """广告/黑名单过滤通知（受 notify_on_blocked 开关控制）"""
+    if not cfg.feishu_webhook or not cfg.notify_on_blocked:
+        return
+    await _send(f"🚫 消息已过滤\n原因：{reason}", cfg.feishu_webhook)
+
+
 async def send_success(name: str, episode_raw: str, url: str, cfg: Config) -> None:
     """发布成功通知（受 notify_on_success 开关控制）"""
     if not cfg.feishu_webhook or not cfg.notify_on_success:

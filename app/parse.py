@@ -10,6 +10,15 @@ from dataclasses import dataclass, field
 from .utils import make_hash_key
 from . import yaml_cfg
 
+# ── 类型标签映射（前置标签行 → Typecho 分类名）───────────────────────────────
+_TYPE_TAG_MAP: dict[str, str] = {
+    "剧集": "剧集", "电视剧": "剧集", "短剧": "剧集",
+    "电影": "电影",
+    "综艺": "综艺", "真人秀": "综艺",
+    "动漫": "动漫", "动画": "动漫", "国漫": "动漫",
+    "音乐": "音乐",
+}
+
 # ── 正则常量 ──────────────────────────────────────────────────────────────────
 
 # 开头前缀（名称 / emoji / 动作词 / 冒号）
@@ -63,6 +72,7 @@ class ParsedItem:
     hash_key: str = ""
     is_series: bool = False
     skip_tmdb: bool = False           # 短剧/音乐等跳过 TMDB
+    type_hint: str = ""               # 前置类型标签推断的分类（如"剧集"/"电影"）
 
 
 # ── 公共入口 ──────────────────────────────────────────────────────────────────
@@ -76,19 +86,20 @@ def parse(text: str) -> ParsedItem | None:
         return None
 
     clean = _remove_delete_lines(text)
-    title_line = _strip_markdown(_first_line(clean))
+    type_hint, body = _split_type_hint(clean)
+    title_line = _strip_markdown(_first_line(body))
 
     name = _extract_name(title_line)
     if not name:
         return None
 
     year = _extract_year(title_line) or ""
-    ep_num, ep_raw = _extract_episode(clean)
+    ep_num, ep_raw = _extract_episode(body)
     quality_bucket = _detect_quality_bucket(title_line)
     extra_quality = _extract_extra_quality(title_line)
-    size = _extract_size(clean)
-    tags = _extract_tags(clean)
-    description = _extract_description(clean)
+    size = _extract_size(body)
+    tags = _extract_tags(body)          # 用 body，避免类型标签混入文章 tags
+    description = _extract_description(body)
     skip = _should_skip_tmdb(title_line, tags)
 
     return ParsedItem(
@@ -105,10 +116,40 @@ def parse(text: str) -> ParsedItem | None:
         hash_key=make_hash_key(name, year),
         is_series=ep_num > 0,
         skip_tmdb=skip,
+        type_hint=type_hint,
     )
 
 
 # ── 私有解析函数 ──────────────────────────────────────────────────────────────
+
+def _split_type_hint(text: str) -> tuple[str, str]:
+    """
+    跳过消息开头的纯类型标签行（如 "#剧集" / "#电影"），
+    返回 (type_hint, 去掉类型标签行后的文本)。
+    """
+    lines = text.splitlines()
+    type_hint = ""
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s:
+            continue
+        tags = _TAG_RE.findall(s)
+        # 跳过纯分隔符行（如 "."、"-"、"—" 等）
+        if re.fullmatch(r'[.\-_—·\s]+', s):
+            continue
+        # 该行去除所有 #tag 后无剩余实质内容 → 纯标签行
+        remainder = re.sub(r'#\S+', '', s).strip()
+        if tags and not remainder and all(t in _TYPE_TAG_MAP for t in tags):
+            if not type_hint:
+                type_hint = _TYPE_TAG_MAP[tags[0]]
+            continue
+        # 找到第一个非类型标签行，从此处开始作为内容
+        return type_hint, "\n".join(lines[i:])
+    # 全部是类型标签行（极端情况），返回去掉类型行后的剩余
+    content_lines = [l for l in lines if _TAG_RE.findall(l.strip()) == [] or
+                     not all(t in _TYPE_TAG_MAP for t in _TAG_RE.findall(l.strip()))]
+    return type_hint, "\n".join(content_lines)
+
 
 def _remove_delete_lines(text: str) -> str:
     """过滤标注了"（这一行可以删除）"的行"""

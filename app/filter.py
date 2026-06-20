@@ -22,11 +22,15 @@ def _compile(cfg: dict) -> tuple:
 _BLOCK_KEYWORDS, _BLOCK_RES, _CLEAN_RULES = _compile(filter_cfg())
 
 
-def should_block(text: str) -> bool:
-    """命中关键词或正则黑名单则返回 True，整条消息丢弃。"""
-    if any(r.search(text) for r in _BLOCK_RES):
-        return True
-    return any(kw in text for kw in _BLOCK_KEYWORDS)
+def should_block(text: str) -> str | None:
+    """命中黑名单则返回命中原因字符串，否则返回 None。"""
+    for r in _BLOCK_RES:
+        if r.search(text):
+            return f"正则：{r.pattern}"
+    for kw in _BLOCK_KEYWORDS:
+        if kw in text:
+            return f"关键词：{kw}"
+    return None
 
 
 def clean_text(text: str) -> str:

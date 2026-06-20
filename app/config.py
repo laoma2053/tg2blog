@@ -28,7 +28,7 @@ class Config(BaseSettings):
     typecho_xmlrpc_endpoint: str = Field(..., description="Typecho XMLRPC 接口地址")
     typecho_user: str = Field(..., description="Typecho 后台账号")
     typecho_password: str = Field(..., description="Typecho 后台密码")
-    typecho_default_category: str = Field(default="影视资源")
+    typecho_default_category: str = Field(default="综合")
 
     # ── CloudFlare ImgBed ─────────────────────────────────────────────────────
     imgbed_enable: bool = Field(default=True)
@@ -51,6 +51,8 @@ class Config(BaseSettings):
     feishu_webhook: str = Field(default="", description="飞书机器人 Webhook URL，不填则禁用通知")
     # 发布成功默认不通知，失败始终通知
     notify_on_success: bool = Field(default=False)
+    # 消息被过滤（黑名单）时是否通知
+    notify_on_blocked: bool = Field(default=False)
 
     # ── 运行时 ────────────────────────────────────────────────────────────────
     db_path: str = Field(default="/data/db/tg2blog.sqlite")

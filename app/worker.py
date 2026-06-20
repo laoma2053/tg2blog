@@ -91,9 +91,11 @@ async def _process(
         return
 
     # 2. 广告过滤
-    if filter_mod.should_block(msg.text):
-        logger.info("🚫 广告过滤 | channel=%s msg_id=%d", msg.channel, msg.msg_id)
+    if block_reason := filter_mod.should_block(msg.text):
+        ch = msg.channel_title or msg.channel
+        logger.info("🚫 广告过滤 | channel=%s msg_id=%d 原因=%s", ch, msg.msg_id, block_reason)
         repo.save_msg(conn, msg.channel, msg.msg_id, msg.msg_date, msg.text, "", is_ad=True)
+        await notify.send_blocked(block_reason, cfg)
         return
 
     # 3. 文本清洗（去除推广行、网盘链接、尾部导流）+ 解析
@@ -135,13 +137,15 @@ async def _process(
     try:
         if cid:
             await publish_client.edit_post(
-                cid, post.title, post.content, post.slug, post.category, post.tags
+                cid, post.title, post.content, post.slug,
+                post.category, post.tags, post.excerpt,
             )
             url = (existing or {}).get("typecho_url", "")
             logger.info("🔄 更新成功 | 《%s》%s cid=%d", merged.name, merged.episode_raw, cid)
         else:
             cid = await publish_client.new_post(
-                post.title, post.content, post.slug, post.category, post.tags
+                post.title, post.content, post.slug,
+                post.category, post.tags, post.excerpt,
             )
             base = cfg.typecho_xmlrpc_endpoint.rsplit("/action", 1)[0]
             url = f"{base}/archives/{post.slug}.html"

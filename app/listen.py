@@ -23,12 +23,13 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RawMessage:
     """队列中流转的消息单元"""
-    channel: str
+    channel: str        # 频道用户名（@xxx），用作数据库键，保持稳定
     msg_id: int
     msg_date: str
     text: str
     is_edit: bool
-    message: Any    # Telethon Message 对象，重试模式下为 None（跳过图片下载）
+    message: Any        # Telethon Message 对象，重试模式下为 None（跳过图片下载）
+    channel_title: str = ""  # 频道显示名（中文名），仅用于日志/通知
 
 
 def start(client: Any, queue: asyncio.Queue, cfg: Config) -> None:
@@ -45,6 +46,7 @@ def start(client: Any, queue: asyncio.Queue, cfg: Config) -> None:
             return
         await queue.put(RawMessage(
             channel=_channel_name(event),
+            channel_title=getattr(getattr(event, "chat", None), "title", None) or "",
             msg_id=msg.id,
             msg_date=msg.date.isoformat() if msg.date else now_iso(),
             text=msg.text,
@@ -60,6 +62,7 @@ def start(client: Any, queue: asyncio.Queue, cfg: Config) -> None:
             return
         await queue.put(RawMessage(
             channel=_channel_name(event),
+            channel_title=getattr(getattr(event, "chat", None), "title", None) or "",
             msg_id=msg.id,
             msg_date=msg.date.isoformat() if msg.date else now_iso(),
             text=msg.text,
@@ -93,6 +96,7 @@ async def catch_up(
                     continue
                 await queue.put(RawMessage(
                     channel=channel,
+                    channel_title=getattr(getattr(msg, "chat", None), "title", None) or "",
                     msg_id=msg.id,
                     msg_date=msg.date.isoformat() if msg.date else now_iso(),
                     text=msg.text,

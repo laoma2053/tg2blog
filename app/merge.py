@@ -25,6 +25,7 @@ class MergedItem:
     is_series: bool
     raw_title: str
     summary: str             # TG 描述：字段，overview 为空时使用
+    type_hint: str           # 前置类型标签推断的分类（如"剧集"/"电影"）
 
     # ── TMDB 补充字段 ─────────────────────────────────────────────────────────
     tmdb_id: int | None
@@ -72,6 +73,7 @@ def merge(
         is_series=parsed.is_series,
         raw_title=parsed.raw_title,
         summary=parsed.description,
+        type_hint=parsed.type_hint,
         # TMDB 补充
         tmdb_id=tmdb.tmdb_id if tmdb else None,
         media_type=tmdb.media_type if tmdb else ("tv" if parsed.is_series else "movie"),

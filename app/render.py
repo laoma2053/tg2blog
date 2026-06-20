@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import html
+import json
 import random
 import re
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ class RenderedPost:
     title: str
     slug: str
     content: str
+    excerpt: str
     tags: list[str]
     category: str
 
@@ -29,12 +31,14 @@ def render(item: MergedItem) -> RenderedPost:
     slug     = to_slug(item.name, item.year)
     category = _auto_category(item)
     tags     = _make_tags(item)
-    content  = _make_html(item)
+    excerpt  = (item.overview or item.summary or "")[:120].strip()
+    content  = _make_html(item, slug)
 
     return RenderedPost(
         title=title,
         slug=slug,
         content=content,
+        excerpt=excerpt,
         tags=tags,
         category=category,
     )
@@ -54,11 +58,22 @@ def _make_title(item: MergedItem) -> str:
 # ── 分类 ──────────────────────────────────────────────────────────────────────
 
 def _auto_category(item: MergedItem) -> str:
-    if item.is_series:
-        return "剧集更新"
-    if "电影" in item.tags or item.media_type == "movie":
-        return "电影资源"
-    return "影视资源"
+    # 优先使用 TG 前置类型标签（最可靠）
+    if item.type_hint:
+        return item.type_hint
+    # 标签/标题推断
+    combined = " ".join(item.tags) + " " + item.raw_title
+    if re.search(r'动漫|动画|国漫', combined):
+        return "动漫"
+    if re.search(r'综艺|真人秀', combined):
+        return "综艺"
+    if re.search(r'音乐|WAV|FLAC|专辑|无损', combined, re.IGNORECASE):
+        return "音乐"
+    if item.is_series or item.media_type == "tv":
+        return "剧集"
+    if "电影" in combined or item.media_type == "movie":
+        return "电影"
+    return "综合"
 
 
 # ── 标签 ──────────────────────────────────────────────────────────────────────
@@ -73,14 +88,86 @@ def _make_tags(item: MergedItem) -> list[str]:
 
 # ── HTML 正文 ─────────────────────────────────────────────────────────────────
 
-def _make_html(item: MergedItem) -> str:
+_CAT_SLUG = {
+    "剧集": "TVSeries", "电影": "Movie", "综艺": "zongyi",
+    "动漫": "dongman", "音乐": "music", "综合": "yingshi",
+}
+
+
+def _make_json_ld(item: MergedItem, slug: str, site: str) -> str:
+    """生成 BlogPosting / BreadcrumbList / TVSeries|Movie / FAQPage 四段 JSON-LD"""
+    category = _auto_category(item)
+    cat_slug  = _CAT_SLUG.get(category, "yingshi")
+    url       = f"{site}/archives/{slug}.html"
+    desc      = (item.overview or item.summary or "")[:200]
+    quality_label = item.quality_bucket.upper() if item.quality_bucket != "hd" else "HD"
+
+    blog_posting = {
+        "@context": "https://schema.org", "@type": "BlogPosting",
+        "headline": f"《{item.name}》{item.year} {quality_label}",
+        "description": desc,
+        "image": item.cover_image_url or "",
+        "datePublished": item.release_date or item.year or "",
+        "author":    {"@type": "Organization", "name": "网盘追剧资源库"},
+        "publisher": {"@type": "Organization", "name": "网盘追剧资源库"},
+    }
+
+    breadcrumb = {
+        "@context": "https://schema.org", "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "首页",    "item": site},
+            {"@type": "ListItem", "position": 2, "name": category,  "item": f"{site}/category/{cat_slug}/"},
+            {"@type": "ListItem", "position": 3, "name": item.name, "item": url},
+        ],
+    }
+
+    media_type = "TVSeries" if item.media_type == "tv" else "Movie"
+    media_schema: dict = {
+        "@context": "https://schema.org", "@type": media_type,
+        "name": item.name, "description": desc,
+        "image": item.cover_image_url or "",
+        "genre": item.genres[:3],
+        "actor": [{"@type": "Person", "name": n} for n in item.cast[:5]],
+    }
+    if item.release_date:
+        media_schema["datePublished"] = item.release_date
+    if item.vote_average:
+        media_schema["aggregateRating"] = {
+            "@type": "AggregateRating",
+            "ratingValue": round(item.vote_average, 1),
+            "ratingCount": 1, "bestRating": 10,
+        }
+
+    ep_text = item.episode_raw or "暂未收录集数信息"
+    version_text = quality_label + (f"，{item.extra_quality}" if item.extra_quality else "")
+    faq = {
+        "@context": "https://schema.org", "@type": "FAQPage",
+        "mainEntity": [
+            {"@type": "Question", "name": "这是什么画质版本？",
+             "acceptedAnswer": {"@type": "Answer",
+                "text": f"本文整理的是《{item.name}》{item.year}年的 {version_text} 版本。"}},
+            {"@type": "Question", "name": "目前更新到第几集？",
+             "acceptedAnswer": {"@type": "Answer", "text": f"当前整理状态为：{ep_text}。"}},
+        ],
+    }
+
+    return "\n".join(
+        f'<script type="application/ld+json">{json.dumps(s, ensure_ascii=False)}</script>'
+        for s in [blog_posting, breadcrumb, media_schema, faq]
+    )
+
+
+def _make_html(item: MergedItem, slug: str) -> str:
     """
-    结构：封面图 → 影片简介 → 影片信息 → 版本信息 → 影评
+    结构：JSON-LD → 封面图 → 影片简介 → 影片信息 → 版本信息 → 影评
     → 资源获取 → 常见问题 → 免责声明 → TMDB attribution
     """
     parts: list[str] = []
     site     = yaml_cfg.site_url()
     site_txt = site.replace("https://", "").replace("http://", "")
+
+    # 0. JSON-LD 结构化数据
+    parts.append(_make_json_ld(item, slug, site))
 
     # 1. 封面图
     if item.cover_image_url:
@@ -188,15 +275,15 @@ def _build_resource_section(item: MergedItem, site: str, site_txt: str) -> str:
         "?utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
     )
     netdisk_labels = [
-        ("夸克网盘", "quark", "前往夸克网盘获取"),
-        ("百度网盘", "baidu", "前往百度网盘获取"),
-        ("迅雷网盘", "thunder", "前往迅雷网盘获取"),
-        ("UC网盘",   "uc",     "前往UC网盘获取"),
+        ("夸克网盘", "quark"),
+        ("百度网盘", "baidu"),
+        ("迅雷网盘", "thunder"),
+        ("UC网盘",   "uc"),
     ]
     netdisk_items = "".join(
         f'<li><strong>{label}：</strong>'
-        f'<a href="{html.escape(url)}" rel="nofollow" target="_blank">{btn}</a></li>'
-        for label, key, btn in netdisk_labels
+        f'<a href="{html.escape(url)}" rel="nofollow noopener noreferrer" target="_blank">{html.escape(url)}</a></li>'
+        for label, key in netdisk_labels
         if (url := yaml_cfg.netdisk_links().get(key, ""))
     )
     fallback = (
@@ -204,16 +291,16 @@ def _build_resource_section(item: MergedItem, site: str, site_txt: str) -> str:
         f"{html.escape(site_txt)}</a> 站内搜索页重新获取。</p>"
     )
     kuake_url = f"https://www.kuake.so/search?q={quote(item.name)}&platform=quark&utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
+    kuake_clean = f"www.kuake.so/search?q={quote(item.name)}"
+    search_clean = f"{site_txt}/s/{quote(item.name)}"
     return (
         "<h2>资源获取</h2>"
         "<h3>推荐入口</h3>"
         "<p>如果网盘链接失效或无法打开，建议优先通过站内搜索获取最新可用版本：</p>"
         f'<p><strong>站内搜索：</strong>'
-        f'<a href="{search_url}" rel="nofollow" target="_blank">'
-        f"搜索《{html.escape(item.name)}》</a></p>"
+        f'<a href="{search_url}" rel="nofollow" target="_blank">{html.escape(search_clean)}</a></p>'
         f'<p><strong>备用（夸克）：</strong>'
-        f'<a href="{html.escape(kuake_url)}" rel="nofollow" target="_blank">'
-        f"搜索《{html.escape(item.name)}》</a></p>"
+        f'<a href="{html.escape(kuake_url)}" rel="nofollow" target="_blank">{html.escape(kuake_clean)}</a></p>'
         "<h3>网盘入口</h3>"
         "<p>以下入口根据当前收录结果自动展示，资源有效性以实际打开页面为准：</p>"
         f"<ul>{netdisk_items}</ul>"

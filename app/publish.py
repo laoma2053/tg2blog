@@ -47,12 +47,13 @@ class TypechoClient:
         slug: str,
         category: str,
         tags: list[str],
+        excerpt: str = "",
     ) -> int:
         """
         新建文章，返回 Typecho cid（整数）。
         category 若不在后台分类中，Typecho 会使用默认分类。
         """
-        struct = _build_struct(title, content, slug, category, tags)
+        struct = _build_struct(title, content, slug, category, tags, excerpt)
         cid = await self._call(
             self._server.metaWeblog.newPost,
             _BLOG_ID, self._user, self._pwd, struct, True,
@@ -67,9 +68,10 @@ class TypechoClient:
         slug: str,
         category: str,
         tags: list[str],
+        excerpt: str = "",
     ) -> None:
         """更新已有文章"""
-        struct = _build_struct(title, content, slug, category, tags)
+        struct = _build_struct(title, content, slug, category, tags, excerpt)
         await self._call(
             self._server.metaWeblog.editPost,
             str(cid), self._user, self._pwd, struct, True,
@@ -100,11 +102,13 @@ def _build_struct(
     slug: str,
     category: str,
     tags: list[str],
+    excerpt: str = "",
 ) -> dict:
     """构造 MetaWeblog newPost/editPost 所需的 content struct"""
     return {
         "title": title,
         "description": content,
+        "mt_excerpt": excerpt,
         # Typecho 通过 categories 数组接收分类名
         "categories": [category],
         # mt_keywords 为逗号分隔的标签字符串
