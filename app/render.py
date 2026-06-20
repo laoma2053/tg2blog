@@ -141,32 +141,35 @@ def _make_html(item: MergedItem) -> str:
     parts.append(_build_resource_section(item, site, site_txt))
 
     # 7. 常见问题
-    ep_answer = (
-        f"当前更新至{item.episode_raw}，以本文显示为准。"
-        if item.episode_raw else "请以本文最新更新状态为准。"
+    name_e   = html.escape(item.name)
+    year_e   = html.escape(item.year)
+    quality_label = item.quality_bucket.upper() if item.quality_bucket != "hd" else "HD"
+    version_e = html.escape(
+        f"{quality_label}" + (f"，{item.extra_quality}" if item.extra_quality else "")
     )
+    ep_e = html.escape(item.episode_raw or "暂未收录集数信息")
+    cast_hint = "、".join(item.cast[:2]) if item.cast else item.name
     parts.append(
         "<h2>常见问题</h2>"
-        f"<p><strong>Q：画质和版本如何？</strong><br>"
-        f"A：{html.escape(quality_label)}版本。"
-        f"{html.escape(item.extra_quality) if item.extra_quality else ''}</p>"
-        "<p><strong>Q：资源更新到第几集？</strong><br>"
-        f"A：{html.escape(ep_answer)}</p>"
-        "<p><strong>Q：如何下载或获取资源？</strong><br>"
-        f'A：点击上方网盘入口，或前往 <a href="{site}" rel="nofollow" target="_blank">'
-        f"{html.escape(site_txt)}</a> 搜索片名获取。</p>"
-        "<p><strong>Q：资源是否免费？</strong><br>"
-        "A：网盘资源获取入口由第三方提供，具体以对应平台规则为准。</p>"
-        "<p><strong>Q：版权相关说明？</strong><br>"
-        "A：本站仅做影视信息整理与资源索引展示，不存储、不传播任何受版权保护的文件。</p>"
+        f"<p><strong>Q：这是什么画质版本？</strong><br>"
+        f"A：本文整理的是《{name_e}》{year_e}年的 {version_e} 版本。"
+        f"具体画质、音轨和文件规格以实际网盘页面展示为准。</p>"
+        f"<p><strong>Q：目前更新到第几集？</strong><br>"
+        f"A：当前整理状态为：{ep_e}。如果资源后续更新，本文会根据频道消息同步调整。</p>"
+        "<p><strong>Q：为什么建议通过站内入口获取？</strong><br>"
+        "A：影视资源链接经常会失效或更换，通过站内入口可以获取当前最新可用版本，避免打开失效链接。</p>"
+        f"<p><strong>Q：搜索不到怎么办？</strong><br>"
+        f"A：可以尝试使用片名简称、原名、主演名或年份重新搜索，例如：{name_e}、{year_e}"
+        f"{('、' + html.escape(cast_hint)) if cast_hint != item.name else ''}。</p>"
+        "<p><strong>Q：链接失效怎么办？</strong><br>"
+        f'A：如果某个网盘入口失效，建议返回 <a href="{site}" rel="nofollow" target="_blank">'
+        f"{html.escape(site_txt)}</a> 站内搜索重新获取，系统会尽量展示最新可用的资源入口。</p>"
     )
 
     # 8. 免责声明
     parts.append(
-        "<hr>"
-        "<p><em>声明：本站仅做影视信息整理与索引展示，不存储任何资源文件。"
-        f'资源获取入口以 <a href="{site}" rel="nofollow" target="_blank">'
-        f"{html.escape(site_txt)}</a> 页面为准。</em></p>"
+        "<hr><p><em>说明：本站仅做影视信息整理与资源索引展示，不存储任何资源文件。"
+        "资源入口来自公开网络信息整理，实际可用性以对应页面显示为准。</em></p>"
     )
 
     # 9. TMDB attribution
@@ -180,34 +183,35 @@ def _make_html(item: MergedItem) -> str:
 
 
 def _build_resource_section(item: MergedItem, site: str, site_txt: str) -> str:
-    """
-    资源获取区块：
-    - 方式一：主站搜索
-    - 方式二：网盘直接保存（夸克 / 百度 / 迅雷 / UC）
-    """
     search_url = (
         f"{site}/s/{quote(item.name)}"
         "?utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
     )
-
-    links: list[str] = [
-        f'<li><strong>网站搜索：</strong>'
+    netdisk_labels = [
+        ("夸克网盘", "quark", "前往夸克网盘获取"),
+        ("百度网盘", "baidu", "前往百度网盘获取"),
+        ("迅雷网盘", "thunder", "前往迅雷网盘获取"),
+        ("UC网盘",   "uc",     "前往UC网盘获取"),
+    ]
+    netdisk_items = "".join(
+        f'<li><strong>{label}：</strong>'
+        f'<a href="{html.escape(url)}" rel="nofollow" target="_blank">{btn}</a></li>'
+        for label, key, btn in netdisk_labels
+        if (url := yaml_cfg.netdisk_links().get(key, ""))
+    )
+    fallback = (
+        f'<p>如果入口暂时不可用，可以返回 <a href="{site}" rel="nofollow" target="_blank">'
+        f"{html.escape(site_txt)}</a> 站内搜索页重新获取。</p>"
+    )
+    return (
+        "<h2>资源获取</h2>"
+        "<h3>推荐入口</h3>"
+        "<p>如果网盘链接失效或无法打开，建议优先通过站内搜索获取最新可用版本：</p>"
+        f'<p><strong>站内搜索：</strong>'
         f'<a href="{search_url}" rel="nofollow" target="_blank">'
-        f"前往 {html.escape(site_txt)} 搜索《{html.escape(item.name)}》</a></li>"
-    ]
-
-    netdisks = [
-        ("夸克网盘", yaml_cfg.netdisk_links().get("quark", "")),
-        ("百度网盘", yaml_cfg.netdisk_links().get("baidu", "")),
-        ("迅雷网盘", yaml_cfg.netdisk_links().get("thunder", "")),
-        ("UC网盘",   yaml_cfg.netdisk_links().get("uc", "")),
-    ]
-    for name, url in netdisks:
-        if url:
-            links.append(
-                f'<li><strong>{name}：</strong>'
-                f'<a href="{html.escape(url)}" rel="nofollow" target="_blank">'
-                f"点击保存</a></li>"
-            )
-
-    return f"<h2>资源获取</h2><ul>{''.join(links)}</ul>"
+        f"搜索《{html.escape(item.name)}》</a></p>"
+        "<h3>网盘入口</h3>"
+        "<p>以下入口根据当前收录结果自动展示，资源有效性以实际打开页面为准：</p>"
+        f"<ul>{netdisk_items}</ul>"
+        + fallback
+    )
