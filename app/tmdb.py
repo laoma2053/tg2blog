@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import aiohttp
 
 from .config import Config
+from . import yaml_cfg
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class TMDBResult:
     poster_url: str
     backdrop_url: str
     cast: list[str]          # 前5位演员
+    reviews: list[str]       # 用户影评摘要
     score: int               # 匹配得分，仅用于筛选，不写入文章
 
 
@@ -89,7 +91,7 @@ async def _search_one(
 
     detail = await _get(
         f"/{mtype}/{best_item['id']}",
-        {"language": cfg.tmdb_language, "append_to_response": "credits"},
+        {"language": cfg.tmdb_language, "append_to_response": "credits,reviews"},
         cfg,
     )
     return _build(detail, mtype, best_score) if detail else None
@@ -133,6 +135,13 @@ def _build(d: dict, mtype: str, score: int) -> TMDBResult:
         for c in (d.get("production_countries") or [])
     ] or list(d.get("origin_country") or [])
 
+    max_n = yaml_cfg.tmdb_max_reviews()
+    reviews = [
+        r["content"].strip()
+        for r in ((d.get("reviews") or {}).get("results") or [])[:max_n]
+        if r.get("content")
+    ]
+
     return TMDBResult(
         tmdb_id=d["id"],
         media_type=mtype,
@@ -146,6 +155,7 @@ def _build(d: dict, mtype: str, score: int) -> TMDBResult:
         poster_url=f"{_IMG}/w500{poster}" if poster else "",
         backdrop_url=f"{_IMG}/w780{backdrop}" if backdrop else "",
         cast=cast,
+        reviews=reviews,
         score=score,
     )
 

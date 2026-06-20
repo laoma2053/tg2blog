@@ -114,8 +114,10 @@ async def _process(
     # 6. 图片处理（可降级）
     image_urls, img_hash_val = await _handle_images(msg, existing, tg_client, cfg)
 
-    # 7. TMDB 查询（带缓存，可降级）
-    tmdb_result = await _get_tmdb_cached(conn, parsed, cfg)
+    # 7. TMDB 查询（带缓存，可降级；短剧/音乐等跳过）
+    tmdb_result = None
+    if not parsed.skip_tmdb:
+        tmdb_result = await _get_tmdb_cached(conn, parsed, cfg)
 
     # 8. 融合 + 渲染
     merged = merge_mod.merge(parsed, tmdb_result, image_urls)
@@ -142,7 +144,7 @@ async def _process(
                 post.title, post.content, post.slug, post.category, post.tags
             )
             base = cfg.typecho_xmlrpc_endpoint.rsplit("/action", 1)[0]
-            url = f"{base}/{post.slug}.html"
+            url = f"{base}/archives/{post.slug}.html"
             logger.info("✅ 发布成功 | 《%s》%s cid=%d", merged.name, merged.episode_raw, cid)
 
         repo.save_post(

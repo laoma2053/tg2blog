@@ -21,7 +21,18 @@ netdisk:
   quark:   "https://pan.quark.cn/s/31b3479e3209"
   baidu:   "https://pan.baidu.com/s/1d2kpf_PogQXfkomoqmrxeg?pwd=zhui"
   thunder: "https://pan.xunlei.com/s/VOmmtFDZ2Dx1N67g9kI95SW3A1?pwd=sbqq"
-  uc:      "https://drive.uc.cn/s/79521dbef0864?public=1"
+  uc:      "https://drive.uc.cn/s/79521dbef0864"
+
+# ── TMDB 行为 ─────────────────────────────────────────────────────────────────
+tmdb:
+  # 标题或标签命中以下关键词时，跳过 TMDB 查询
+  skip_keywords:
+    - "短剧"
+    - "音乐"
+    - "综艺"
+    - "合集"
+  # 文章中展示的 TMDB 影评条数
+  max_reviews: 2
 
 # ── 过滤规则 ──────────────────────────────────────────────────────────────────
 

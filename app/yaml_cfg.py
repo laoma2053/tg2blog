@@ -40,6 +40,16 @@ def netdisk_links() -> dict[str, str]:
     return _data.get("netdisk") or {}
 
 
+def tmdb_skip_keywords() -> list[str]:
+    """命中则跳过 TMDB 查询的关键词"""
+    return (_data.get("tmdb") or {}).get("skip_keywords") or ["短剧", "音乐", "综艺", "合集"]
+
+
+def tmdb_max_reviews() -> int:
+    """文章中展示的 TMDB 影评条数"""
+    return int((_data.get("tmdb") or {}).get("max_reviews") or 2)
+
+
 def filter_cfg() -> dict:
     """过滤规则配置（block_keywords / block_regex / clean_rules）"""
     return _data.get("filter") or {}

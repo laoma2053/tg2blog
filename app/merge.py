@@ -24,7 +24,7 @@ class MergedItem:
     hash_key: str
     is_series: bool
     raw_title: str
-    summary: str             # TG 原始简介，overview 为空时使用
+    summary: str             # TG 描述：字段，overview 为空时使用
 
     # ── TMDB 补充字段 ─────────────────────────────────────────────────────────
     tmdb_id: int | None
@@ -35,6 +35,7 @@ class MergedItem:
     vote_average: float
     release_date: str
     cast: list[str]
+    reviews: list[str]        # TMDB 影评摘要
     poster_url: str
     has_tmdb: bool           # True 时文章底部需加 TMDB attribution
 
@@ -55,7 +56,7 @@ def merge(
     """
     cover = image_urls[0] if image_urls else (tmdb.poster_url if tmdb else "")
     extras = image_urls[1:] if len(image_urls) > 1 else []
-    overview = (tmdb.overview if tmdb and tmdb.overview else parsed.summary) or ""
+    overview = (tmdb.overview if tmdb and tmdb.overview else parsed.description) or ""
 
     return MergedItem(
         # TG 字段
@@ -70,7 +71,7 @@ def merge(
         hash_key=parsed.hash_key,
         is_series=parsed.is_series,
         raw_title=parsed.raw_title,
-        summary=parsed.summary,
+        summary=parsed.description,
         # TMDB 补充
         tmdb_id=tmdb.tmdb_id if tmdb else None,
         media_type=tmdb.media_type if tmdb else ("tv" if parsed.is_series else "movie"),
@@ -80,6 +81,7 @@ def merge(
         vote_average=tmdb.vote_average if tmdb else 0.0,
         release_date=tmdb.release_date if tmdb else "",
         cast=tmdb.cast if tmdb else [],
+        reviews=tmdb.reviews if tmdb else [],
         poster_url=tmdb.poster_url if tmdb else "",
         has_tmdb=tmdb is not None,
         # 图片
