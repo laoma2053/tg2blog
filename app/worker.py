@@ -91,19 +91,20 @@ async def _process(
         return
 
     # 2. 广告过滤
-    if filter_mod.is_ad(msg.text, cfg):
+    if filter_mod.should_block(msg.text, cfg):
         logger.info("🚫 广告过滤 | channel=%s msg_id=%d", msg.channel, msg.msg_id)
         repo.save_msg(conn, msg.channel, msg.msg_id, msg.msg_date, msg.text, "", is_ad=True)
         return
 
-    # 3. 消息解析
-    parsed = parse_mod.parse(msg.text)
+    # 3. 文本清洗（去除推广行、网盘链接、尾部导流）+ 解析
+    clean = filter_mod.clean_text(msg.text)
+    parsed = parse_mod.parse(clean)
     if not parsed:
         logger.warning("⚠️  解析失败跳过 | msg_id=%d", msg.msg_id)
         return
     logger.debug("🔍 解析完成 | 片名=%s EP=%s", parsed.name, parsed.episode_raw)
 
-    # 4. 保存消息记录
+    # 4. 保存消息记录（存原始文本，便于排查）
     repo.save_msg(conn, msg.channel, msg.msg_id, msg.msg_date,
                   msg.text, parsed.hash_key, dataclasses.asdict(parsed))
 
