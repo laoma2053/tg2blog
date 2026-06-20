@@ -29,6 +29,7 @@ class TMDBResult:
     genres: list[str]
     countries: list[str]
     vote_average: float
+    vote_count: int               # TMDB 投票数，用于 aggregateRating
     release_date: str
     poster_url: str
     backdrop_url: str
@@ -151,6 +152,7 @@ def _build(d: dict, mtype: str, score: int) -> TMDBResult:
         genres=genres,
         countries=countries,
         vote_average=float(d.get("vote_average") or 0),
+        vote_count=int(d.get("vote_count") or 0),
         release_date=(d.get("first_air_date") or d.get("release_date") or "")[:10],
         poster_url=f"{_IMG}/w500{poster}" if poster else "",
         backdrop_url=f"{_IMG}/w780{backdrop}" if backdrop else "",

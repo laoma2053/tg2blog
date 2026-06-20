@@ -45,6 +45,9 @@ _EP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# S##E## 格式：S01E13 / S01E01 - E13 / S01E01-E04
+_SE_RE = re.compile(r'S\d+E(\d+)(?:\s*[-–]\s*E(\d+))?', re.IGNORECASE)
+
 # 每集体积
 _SIZE_RE = re.compile(r'体积\s*[：:]\s*([\d.]+\s*[GgMm][Bb]?(?:[/／]集)?)')
 
@@ -258,7 +261,13 @@ def _extract_extra_quality(title_line: str) -> str:
 
 def _extract_episode(text: str) -> tuple[int, str]:
     """返回 (集数, 原始文本)；无集数返回 (0, '')"""
-    # 先尝试带数字的
+    # S##E## 格式优先（如 S01E13 / S01E01 - E13）
+    for m in _SE_RE.finditer(text):
+        end_ep = m.group(2) or m.group(1)   # 有范围取末集，否则取当前集
+        num = int(end_ep)
+        if num > 0:
+            return num, m.group(0).strip()
+    # 中文集数格式
     for m in _EP_RE.finditer(text):
         num_str = m.group(1) or m.group(2) or m.group(3) or m.group(4)
         if num_str:

@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from .merge import MergedItem
 from . import yaml_cfg
-from .utils import to_slug
+from .utils import to_slug, now_iso
 
 
 @dataclass
@@ -31,7 +31,7 @@ def render(item: MergedItem) -> RenderedPost:
     slug     = to_slug(item.name, item.year)
     category = _auto_category(item)
     tags     = _make_tags(item)
-    excerpt  = (item.overview or item.summary or "")[:120].strip()
+    excerpt  = ""  # 留空，由外部插件生成摘要
     content  = _make_html(item, slug)
 
     return RenderedPost(
@@ -108,6 +108,7 @@ def _make_json_ld(item: MergedItem, slug: str, site: str) -> str:
         "description": desc,
         "image": item.cover_image_url or "",
         "datePublished": item.release_date or item.year or "",
+        "dateModified": now_iso()[:10],
         "author":    {"@type": "Organization", "name": "网盘追剧资源库"},
         "publisher": {"@type": "Organization", "name": "网盘追剧资源库"},
     }
@@ -131,12 +132,15 @@ def _make_json_ld(item: MergedItem, slug: str, site: str) -> str:
     }
     if item.release_date:
         media_schema["datePublished"] = item.release_date
-    if item.vote_average:
+    if item.vote_average and item.vote_count:
         media_schema["aggregateRating"] = {
             "@type": "AggregateRating",
             "ratingValue": round(item.vote_average, 1),
-            "ratingCount": 1, "bestRating": 10,
+            "ratingCount": item.vote_count,
+            "bestRating": 10,
         }
+    if item.episode_num:
+        media_schema["numberOfEpisodes"] = item.episode_num
 
     ep_text = item.episode_raw or "暂未收录集数信息"
     version_text = quality_label + (f"，{item.extra_quality}" if item.extra_quality else "")
@@ -148,6 +152,15 @@ def _make_json_ld(item: MergedItem, slug: str, site: str) -> str:
                 "text": f"本文整理的是《{item.name}》{item.year}年的 {version_text} 版本。"}},
             {"@type": "Question", "name": "目前更新到第几集？",
              "acceptedAnswer": {"@type": "Answer", "text": f"当前整理状态为：{ep_text}。"}},
+            {"@type": "Question", "name": "为什么建议通过站内入口获取？",
+             "acceptedAnswer": {"@type": "Answer",
+                "text": "影视资源链接经常会失效或更换，通过站内入口可以获取当前最新可用版本，避免打开失效链接。"}},
+            {"@type": "Question", "name": "搜索不到怎么办？",
+             "acceptedAnswer": {"@type": "Answer",
+                "text": f"可以尝试使用片名简称、原名、主演名或年份重新搜索，例如：{item.name}、{item.year}。"}},
+            {"@type": "Question", "name": "链接失效怎么办？",
+             "acceptedAnswer": {"@type": "Answer",
+                "text": f"如果某个网盘入口失效，建议返回 {site} 站内搜索重新获取，系统会尽量展示最新可用的资源入口。"}},
         ],
     }
 
@@ -166,8 +179,7 @@ def _make_html(item: MergedItem, slug: str) -> str:
     site     = yaml_cfg.site_url()
     site_txt = site.replace("https://", "").replace("http://", "")
 
-    # 0. JSON-LD 结构化数据
-    parts.append(_make_json_ld(item, slug, site))
+    # 0. JSON-LD 结构化数据（放正文末尾，避免主题摘要截取时泄露）
 
     # 1. 封面图
     if item.cover_image_url:
@@ -266,6 +278,9 @@ def _make_html(item: MergedItem, slug: str) -> str:
             "本产品使用 TMDB API，但未经 TMDB 认可或认证。</small></p>"
         )
 
+    # 10. JSON-LD 结构化数据（放末尾，不影响主题摘要截取）
+    parts.append(_make_json_ld(item, slug, site))
+
     return "\n".join(parts)
 
 
@@ -291,8 +306,8 @@ def _build_resource_section(item: MergedItem, site: str, site_txt: str) -> str:
         f"{html.escape(site_txt)}</a> 站内搜索页重新获取。</p>"
     )
     kuake_url = f"https://www.kuake.so/search?q={quote(item.name)}&platform=quark&utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
-    kuake_clean = f"www.kuake.so/search?q={quote(item.name)}"
-    search_clean = f"{site_txt}/s/{quote(item.name)}"
+    kuake_clean = f"www.kuake.so/search?q={item.name}"
+    search_clean = f"{site_txt}/s/{item.name}"
     return (
         "<h2>资源获取</h2>"
         "<h3>推荐入口</h3>"

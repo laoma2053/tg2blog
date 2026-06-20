@@ -34,6 +34,7 @@ class MergedItem:
     genres: list[str]
     countries: list[str]
     vote_average: float
+    vote_count: int               # TMDB 投票数
     release_date: str
     cast: list[str]
     reviews: list[str]        # TMDB 影评摘要
@@ -81,6 +82,7 @@ def merge(
         genres=tmdb.genres if tmdb else [],
         countries=tmdb.countries if tmdb else [],
         vote_average=tmdb.vote_average if tmdb else 0.0,
+        vote_count=tmdb.vote_count if tmdb else 0,
         release_date=tmdb.release_date if tmdb else "",
         cast=tmdb.cast if tmdb else [],
         reviews=tmdb.reviews if tmdb else [],
