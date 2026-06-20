@@ -7,8 +7,8 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 
-from .config import Config
 from .merge import MergedItem
+from . import yaml_cfg
 from .utils import to_slug
 
 
@@ -21,13 +21,13 @@ class RenderedPost:
     category: str
 
 
-def render(item: MergedItem, cfg: Config) -> RenderedPost:
+def render(item: MergedItem) -> RenderedPost:
     """生成可直接发布到 Typecho 的文章对象"""
     title    = _make_title(item)
     slug     = to_slug(item.name, item.year)
     category = _auto_category(item)
     tags     = _make_tags(item)
-    content  = _make_html(item, cfg)
+    content  = _make_html(item)
 
     return RenderedPost(
         title=title,
@@ -70,7 +70,7 @@ def _make_tags(item: MergedItem) -> list[str]:
 
 # ── HTML 正文 ─────────────────────────────────────────────────────────────────
 
-def _make_html(item: MergedItem, cfg: Config) -> str:
+def _make_html(item: MergedItem) -> str:
     """
     生成固定结构的 HTML 正文：
     封面图 → 资源摘要 → 影片信息 → 版本信息 → 剧情简介
@@ -135,19 +135,19 @@ def _make_html(item: MergedItem, cfg: Config) -> str:
 
     # 6. 获取方式（主站导流）
     search_url = (
-        f"{cfg.main_site_url}/s/{html.escape(item.name)}"
+        f"{yaml_cfg.site_url()}/s/{html.escape(item.name)}"
         "?utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
     )
     parts.append(
         f"<h2>获取方式</h2>"
         f"<p>资源链接会定期更新，请通过以下入口获取最新可用版本：</p>"
         f'<p><a href="{search_url}" rel="nofollow" target="_blank">'
-        f"点击前往 {cfg.main_site_url} 获取资源</a></p>"
+        f"点击前往 {yaml_cfg.site_url()} 获取资源</a></p>"
     )
 
     # 7. 资源获取（4个网盘固定入口 + 主站搜索）
     # 网盘链接为全站固定链接，由运营方在 .env 中配置，不随影片变化
-    netdisk_links = _build_netdisk(item, cfg)
+    netdisk_links = _build_netdisk(item)
     parts.append(f"<h2>资源获取</h2>{netdisk_links}")
 
     # 8. 常见问题
@@ -162,7 +162,7 @@ def _make_html(item: MergedItem, cfg: Config) -> str:
         "<p><strong>Q：资源更新到第几集？</strong><br>"
         f"A：{html.escape(ep_answer)}</p>"
         "<p><strong>Q：如何下载或获取资源？</strong><br>"
-        f"A：点击上方网盘入口，或前往 {html.escape(cfg.main_site_url)} 搜索片名获取。</p>"
+        f"A：点击上方网盘入口，或前往 {html.escape(yaml_cfg.site_url())} 搜索片名获取。</p>"
         "<p><strong>Q：资源是否免费？</strong><br>"
         "A：网盘资源获取入口由第三方提供，具体以对应平台规则为准。</p>"
         "<p><strong>Q：版权相关说明？</strong><br>"
@@ -173,7 +173,7 @@ def _make_html(item: MergedItem, cfg: Config) -> str:
     parts.append(
         "<hr>"
         "<p><em>声明：本站仅做影视信息整理与索引展示，不存储任何资源文件。"
-        f"资源获取入口以 {html.escape(cfg.main_site_url)} 页面为准。</em></p>"
+        f"资源获取入口以 {html.escape(yaml_cfg.site_url())} 页面为准。</em></p>"
     )
 
     # 10. TMDB attribution（使用了 TMDB 数据时必须展示）
@@ -186,19 +186,19 @@ def _make_html(item: MergedItem, cfg: Config) -> str:
     return "\n".join(parts)
 
 
-def _build_netdisk(item: MergedItem, cfg: Config) -> str:
-    """构造网盘入口区块（固定链接，全站统一）"""
+def _build_netdisk(item: MergedItem) -> str:
+    """构造网盘入口区块（链接从 config.yaml netdisk 节点读取）"""
+    site = yaml_cfg.site_url()
     search_url = (
-        f"{cfg.main_site_url}/s/{html.escape(item.name)}"
+        f"{site}/s/{html.escape(item.name)}"
         "?utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
     )
     links: list[str] = []
-    # 依次展示4个网盘（链接为空则跳过，确保配置后才渲染）
     netdisks = [
-        ("夸克网盘", cfg.netdisk_quark),
-        ("百度网盘", cfg.netdisk_baidu),
-        ("迅雷网盘", cfg.netdisk_thunder),
-        ("UC网盘",   cfg.netdisk_uc),
+        ("夸克网盘", yaml_cfg.netdisk_links().get("quark", "")),
+        ("百度网盘", yaml_cfg.netdisk_links().get("baidu", "")),
+        ("迅雷网盘", yaml_cfg.netdisk_links().get("thunder", "")),
+        ("UC网盘",   yaml_cfg.netdisk_links().get("uc", "")),
     ]
     for name, url in netdisks:
         if url:
@@ -210,6 +210,6 @@ def _build_netdisk(item: MergedItem, cfg: Config) -> str:
     links.append(
         f'<li><strong>网盘搜索入口：</strong>'
         f'<a href="{search_url}" rel="nofollow" target="_blank">'
-        f"{html.escape(cfg.main_site_url)}</a></li>"
+        f"{html.escape(site)}</a></li>"
     )
     return f"<ul>{''.join(links)}</ul>"

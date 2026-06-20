@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,8 +22,6 @@ class Config(BaseSettings):
     # ── Telegram ──────────────────────────────────────────────────────────────
     tg_api_id: int = Field(..., description="Telegram App API ID，从 my.telegram.org 获取")
     tg_api_hash: str = Field(..., description="Telegram App API Hash")
-    # 支持逗号分隔字符串，如 "@Oscar_4Kmovies,@another"
-    tg_channels: list[str] = Field(..., description="监听的频道列表")
     session_dir: str = Field(default="/data/session", description="Telethon session 持久化目录")
 
     # ── Typecho ───────────────────────────────────────────────────────────────
@@ -49,13 +47,6 @@ class Config(BaseSettings):
     # 匹配得分低于此阈值时，不采用 TMDB 结果（见 MODULES.md 打分规则）
     tmdb_score_min: int = Field(default=60)
 
-    # ── 网盘导流（所有文章底部统一展示的固定链接，不随影片变化）─────────────────
-    netdisk_quark: str = Field(default="", description="夸克网盘固定入口链接")
-    netdisk_baidu: str = Field(default="", description="百度网盘固定入口链接")
-    netdisk_thunder: str = Field(default="", description="迅雷网盘固定入口链接")
-    netdisk_uc: str = Field(default="", description="UC 网盘固定入口链接")
-    main_site_url: str = Field(default="https://www.zhuiju.us")
-
     # ── 飞书通知 ──────────────────────────────────────────────────────────────
     feishu_webhook: str = Field(default="", description="飞书机器人 Webhook URL，不填则禁用通知")
     # 发布成功默认不通知，失败始终通知
@@ -69,14 +60,6 @@ class Config(BaseSettings):
     max_posts_per_minute: int = Field(default=20)
 
     # ── validators ────────────────────────────────────────────────────────────
-
-    @field_validator("tg_channels", mode="before")
-    @classmethod
-    def _split_csv(cls, v: str | list) -> list[str]:
-        """将逗号分隔字符串转换为列表"""
-        if isinstance(v, str):
-            return [item.strip() for item in v.split(",") if item.strip()]
-        return v or []
 
     @model_validator(mode="after")
     def _validate_enabled_services(self) -> "Config":

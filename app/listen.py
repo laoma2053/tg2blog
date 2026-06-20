@@ -13,6 +13,7 @@ from typing import Any
 from telethon import events
 
 from . import repo
+from . import yaml_cfg
 from .config import Config
 from .utils import now_iso
 
@@ -35,7 +36,7 @@ def start(client: Any, queue: asyncio.Queue, cfg: Config) -> None:
     注册 NewMessage 和 MessageEdited 事件处理器。
     监听 cfg.tg_channels 中的所有频道。
     """
-    channels = cfg.tg_channels
+    channels = yaml_cfg.channels()
 
     @client.on(events.NewMessage(chats=channels))
     async def _on_new(event: Any) -> None:
@@ -79,7 +80,7 @@ async def catch_up(
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=cfg.catchup_hours)
 
-    for channel in cfg.tg_channels:
+    for channel in yaml_cfg.channels():
         last_id = repo.get_last_msg_id(conn, channel)
         count = 0
 

@@ -119,7 +119,7 @@ async def _process(
 
     # 8. 融合 + 渲染
     merged = merge_mod.merge(parsed, tmdb_result, image_urls)
-    post = render_mod.render(merged, cfg)
+    post = render_mod.render(merged)
 
     # 9. content_hash 检查
     c_hash = content_hash(merged.episode_num, merged.extra_quality, merged.size_per_ep)

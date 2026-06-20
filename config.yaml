@@ -1,5 +1,29 @@
-# tg2blog 过滤规则配置
-# 修改此文件后重启容器即可生效，无需重新构建镜像。
+# tg2blog 业务配置
+# 修改此文件后重启容器即可生效，无需重新构建镜像，无需修改代码。
+
+# ── 监听频道 ──────────────────────────────────────────────────────────────────
+channels:
+  - "@jpnd5"
+  - "@fcij5"
+  - "@jnjy_5"
+  - "@xvth5"
+  - "@djya5"
+  - "@Aliyun_4K_Movies"
+  - "@Netdisk_Movies"
+  - "@kfcfoodcourt"
+
+# ── 主站与导流 ────────────────────────────────────────────────────────────────
+site:
+  main_url: "https://www.zhuiju.us"
+
+# ── 网盘固定入口（所有文章底部统一展示）─────────────────────────────────────────
+netdisk:
+  quark:   "https://pan.quark.cn/s/31b3479e3209"
+  baidu:   "https://pan.baidu.com/s/1d2kpf_PogQXfkomoqmrxeg?pwd=zhui"
+  thunder: "https://pan.xunlei.com/s/VOmmtFDZ2Dx1N67g9kI95SW3A1?pwd=sbqq"
+  uc:      "https://drive.uc.cn/s/79521dbef0864?public=1"
+
+# ── 过滤规则 ──────────────────────────────────────────────────────────────────
 
 filter:
 
