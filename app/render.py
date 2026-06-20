@@ -203,12 +203,16 @@ def _build_resource_section(item: MergedItem, site: str, site_txt: str) -> str:
         f'<p>如果入口暂时不可用，可以返回 <a href="{site}" rel="nofollow" target="_blank">'
         f"{html.escape(site_txt)}</a> 站内搜索页重新获取。</p>"
     )
+    kuake_url = f"https://www.kuake.so/search?q={quote(item.name)}&platform=quark&utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
     return (
         "<h2>资源获取</h2>"
         "<h3>推荐入口</h3>"
         "<p>如果网盘链接失效或无法打开，建议优先通过站内搜索获取最新可用版本：</p>"
         f'<p><strong>站内搜索：</strong>'
         f'<a href="{search_url}" rel="nofollow" target="_blank">'
+        f"搜索《{html.escape(item.name)}》</a></p>"
+        f'<p><strong>备用（夸克）：</strong>'
+        f'<a href="{html.escape(kuake_url)}" rel="nofollow" target="_blank">'
         f"搜索《{html.escape(item.name)}》</a></p>"
         "<h3>网盘入口</h3>"
         "<p>以下入口根据当前收录结果自动展示，资源有效性以实际打开页面为准：</p>"
