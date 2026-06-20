@@ -13,6 +13,7 @@ from telethon import TelegramClient
 
 from .config import get_config
 from .db import get_conn, init_schema
+from . import yaml_cfg
 from .listen import catch_up, start as listen_start
 from .publish import TypechoClient
 from .worker import retry_loop, run as worker_run
@@ -77,7 +78,7 @@ async def main() -> None:
     # 9. catch-up：补偿最近 catchup_hours 内未处理的历史消息
     await catch_up(tg_client, queue, conn, cfg)
 
-    logger.info("🚀 服务启动完成 | 监听频道=%s", ", ".join(cfg.tg_channels))
+    logger.info("🚀 服务启动完成 | 监听频道=%s", ", ".join(yaml_cfg.channels()))
 
     # 10. 保持运行直到断开
     await tg_client.run_until_disconnected()

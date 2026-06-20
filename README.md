@@ -60,35 +60,38 @@ cp .env.example .env
 
 ---
 
-## 第三步：Telegram 首次认证（必须本地交互执行一次）
+## 第三步：构建镜像并完成 Telegram 首次认证
 
-Telethon 使用真实 Telegram 账号监听频道，首次运行需要输入手机号和验证码完成登录，session 文件保存后后续无需重复操作。
+首次运行需要交互式输入手机号和验证码，session 文件保存后后续无需重复操作。
 
 ```bash
-# 在服务器上安装依赖
-pip install -r requirements.txt
+# 构建镜像
+docker compose build
 
-# 创建数据目录
+# 创建数据目录（必须，否则 session 文件无法写入）
 mkdir -p data/db data/session
 
-# 运行一次，按提示输入手机号和验证码
-python -m app.main
+# 交互式启动完成认证
+docker compose run --rm tg2blog python -m app.main
 ```
 
-看到 `🚀 服务启动完成` 后按 `Ctrl+C` 停止，session 文件已保存在 `data/session/`。
+启动后按提示操作：
 
-> 如果服务器无法直接运行 Python，也可以在本地完成认证后将 `data/session/` 目录上传到服务器。
+1. **输入手机号**：带国家码，例如中国大陆号码输入 `+8613800000000`
+2. **输入验证码**：Telegram 会向该手机号发送一条消息，打开 Telegram 查收，输入 5 位数字验证码
+3. **二步验证（如有）**：若账号开启了两步验证，还需输入密码
+
+看到 `🚀 服务启动完成` 后按 `Ctrl+C`，session 文件已自动保存到 `./data/session/`，后续启动无需重复认证。
 
 ---
 
-## 第四步：Docker 部署
+## 第四步：后台启动
 
 ```bash
-# 构建并启动（后台运行）
-docker-compose up -d --build
+docker compose up -d
 
 # 查看实时日志，确认正常运行
-docker-compose logs -f tg2blog
+docker compose logs -f tg2blog
 ```
 
 正常启动时日志示例：
@@ -107,13 +110,13 @@ docker-compose logs -f tg2blog
 
 ```bash
 # 重启服务
-docker-compose restart tg2blog
+docker compose restart tg2blog
 
 # 停止服务
-docker-compose down
+docker compose down
 
 # 只看错误和告警
-docker-compose logs tg2blog | grep "❌\|🚨\|💀\|⚠️"
+docker compose logs tg2blog | grep "❌\|🚨\|💀\|⚠️"
 
 # 查看最近发布记录
 docker exec -it tg2blog sqlite3 /data/db/tg2blog.sqlite \
