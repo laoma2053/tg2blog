@@ -69,17 +69,17 @@ async def main() -> None:
     # 6. 注册实时监听事件
     listen_start(tg_client, queue, cfg)
 
-    # 7. 启动 retry scanner 协程（后台运行）
-    asyncio.ensure_future(retry_loop(queue, conn, cfg))
-
-    # 8. 启动 queue worker 协程（后台运行）
-    asyncio.ensure_future(worker_run(queue, publish_client, tg_client, conn, cfg))
+    # 7-8. 启动后台协程（保存引用，防止被GC回收导致Task被销毁）
+    _tasks = [
+        asyncio.ensure_future(retry_loop(queue, conn, cfg)),
+        asyncio.ensure_future(worker_run(queue, publish_client, tg_client, conn, cfg)),
+    ]
 
     # 9. catch-up：补偿最近 catchup_hours 内未处理的历史消息（有时间截止）
     await catch_up(tg_client, queue, conn, cfg, hours=cfg.catchup_hours)
 
     # 10. 重连侦测：断线重连后立即补偿遗漏消息
-    asyncio.ensure_future(reconnect_watcher(tg_client, queue, conn, cfg))
+    _tasks.append(asyncio.ensure_future(reconnect_watcher(tg_client, queue, conn, cfg)))
 
     logger.info("🚀 服务启动完成 | 监听频道=%s", ", ".join(yaml_cfg.channels()))
 
