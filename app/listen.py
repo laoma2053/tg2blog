@@ -75,13 +75,16 @@ def start(client: Any, queue: asyncio.Queue, cfg: Config) -> None:
 
 
 async def catch_up(
-    client: Any, queue: asyncio.Queue, conn: Any, cfg: Config
+    client: Any, queue: asyncio.Queue, conn: Any, cfg: Config, hours: int | None = None
 ) -> None:
     """
-    服务重启后补偿历史消息。
-    每个频道从上次处理的最大 msg_id 起，向前追溯至多 catchup_hours 小时。
+    补偿历史消息。hours=None 时不设时间截止，仅依赖 min_id 限边界（用于定期补偿）；
+    hours 有值时额外加时间截止（用于启动时的初始 catch-up）。
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=cfg.catchup_hours)
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=hours or cfg.catchup_hours)
+        if hours is not None else None
+    )
 
     for channel in yaml_cfg.channels():
         last_id = repo.get_last_msg_id(conn, channel)
@@ -89,8 +92,8 @@ async def catch_up(
 
         try:
             async for msg in client.iter_messages(channel, min_id=last_id):
-                # iter_messages 从最新到最旧，超出时间窗口则停止
-                if msg.date and msg.date.replace(tzinfo=timezone.utc) < cutoff:
+                # 有时间截止时，超出窗口则停止（启动模式）
+                if cutoff and msg.date and msg.date.replace(tzinfo=timezone.utc) < cutoff:
                     break
                 if not msg.text:
                     continue
@@ -110,6 +113,23 @@ async def catch_up(
 
         if count:
             logger.info("⏪ 补偿历史消息 | 频道=%s 发现=%d条", channel, count)
+
+
+async def reconnect_watcher(
+    client: Any, queue: asyncio.Queue, conn: Any, cfg: Config
+) -> None:
+    """
+    重连侦测 — 每30秒检查一次连接状态。
+    检测到断线→重连时立即触发 catch_up，补偿断线期间的所有遗漏消息。
+    """
+    was_connected = True
+    while True:
+        await asyncio.sleep(30)
+        is_conn = client.is_connected()
+        if not was_connected and is_conn:
+            logger.info("🔌 检测到重连，开始补偿断线期间遗漏消息")
+            await catch_up(client, queue, conn, cfg, hours=None)
+        was_connected = is_conn
 
 
 def _channel_name(event: Any) -> str:

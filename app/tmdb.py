@@ -29,7 +29,7 @@ class TMDBResult:
     genres: list[str]
     countries: list[str]
     vote_average: float
-    vote_count: int               # TMDB 投票数，用于 aggregateRating
+    vote_count: int = 0            # TMDB 投票数，用于 aggregateRating
     release_date: str
     poster_url: str
     backdrop_url: str

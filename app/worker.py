@@ -87,13 +87,13 @@ async def _process(
 ) -> None:
     # 1. 消息级去重（编辑消息不跳过，需要更新文章）
     if not msg.is_edit and repo.msg_exists(conn, msg.channel, msg.msg_id):
-        logger.debug("⏭️  已处理跳过 | channel=%s msg_id=%d", msg.channel, msg.msg_id)
+        logger.debug("⏭️  已处理跳过 | [%s] msg_id=%d", msg.channel_title or msg.channel, msg.msg_id)
         return
 
     # 2. 广告过滤
     if block_reason := filter_mod.should_block(msg.text):
         ch = msg.channel_title or msg.channel
-        logger.info("🚫 广告过滤 | channel=%s msg_id=%d 原因=%s", ch, msg.msg_id, block_reason)
+        logger.info("🚫 广告过滤 | [%s] msg_id=%d 原因=%s", ch, msg.msg_id, block_reason)
         repo.save_msg(conn, msg.channel, msg.msg_id, msg.msg_date, msg.text, "", is_ad=True)
         await notify.send_blocked(block_reason, cfg)
         return
@@ -102,7 +102,7 @@ async def _process(
     clean = filter_mod.clean_text(msg.text)
     parsed = parse_mod.parse(clean)
     if not parsed:
-        logger.warning("⚠️  解析失败跳过 | msg_id=%d", msg.msg_id)
+        logger.warning("⚠️  解析失败跳过 | [%s] msg_id=%d", msg.channel_title or msg.channel, msg.msg_id)
         return
     logger.debug("🔍 解析完成 | 片名=%s EP=%s", parsed.name, parsed.episode_raw)
 
@@ -141,7 +141,8 @@ async def _process(
                 post.category, post.tags, post.excerpt,
             )
             url = (existing or {}).get("typecho_url", "")
-            logger.info("🔄 更新成功 | 《%s》%s cid=%d", merged.name, merged.episode_raw, cid)
+            logger.info("🔄 更新成功 | [%s] 《%s》%s cid=%d",
+                        msg.channel_title or msg.channel, merged.name, merged.episode_raw, cid)
         else:
             cid = await publish_client.new_post(
                 post.title, post.content, post.slug,
@@ -149,7 +150,8 @@ async def _process(
             )
             base = cfg.typecho_xmlrpc_endpoint.rsplit("/action", 1)[0]
             url = f"{base}/archives/{post.slug}.html"
-            logger.info("✅ 发布成功 | 《%s》%s cid=%d", merged.name, merged.episode_raw, cid)
+            logger.info("✅ 发布成功 | [%s] 《%s》%s cid=%d",
+                        msg.channel_title or msg.channel, merged.name, merged.episode_raw, cid)
 
         repo.save_post(
             conn, parsed.hash_key, cid, url, post.title,
