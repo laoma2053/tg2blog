@@ -29,13 +29,13 @@ class TMDBResult:
     genres: list[str]
     countries: list[str]
     vote_average: float
-    vote_count: int = 0            # TMDB 投票数，用于 aggregateRating
     release_date: str
     poster_url: str
     backdrop_url: str
     cast: list[str]          # 前5位演员
     reviews: list[str]       # 用户影评摘要
     score: int               # 匹配得分，仅用于筛选，不写入文章
+    vote_count: int = 0      # TMDB 投票数，用于 aggregateRating（有默认值，须排在末尾）
 
 
 async def search(
