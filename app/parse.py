@@ -21,10 +21,10 @@ _TYPE_TAG_MAP: dict[str, str] = {
 
 # ── 正则常量 ──────────────────────────────────────────────────────────────────
 
-# 开头前缀（名称 / emoji / 动作词 / 冒号）
+# 开头前缀（名称 / 资源标题 / emoji / 动作词 / 冒号）
 _PREFIX_RE = re.compile(
     r'^[\s\U00010000-\U0010FFFF☀-➿︀-️]*'
-    r'(?:名称|已更新|新增|上线|发布|更新|首播|完结|最新)?'
+    r'(?:名称|资源标题|已更新|新增|上线|发布|更新|首播|完结|最新)?'
     r'[\s:：]*',
     re.UNICODE,
 )
@@ -202,13 +202,18 @@ def _extract_name(title_line: str) -> str:
         name = stripped[: mq.start()]
         return _clean_name_tail(name)
 
-    # 停止点3：集数标记
+    # 停止点3：分隔符 | ｜（片名后接类型描述）
+    mp = re.search(r'[|｜]', stripped)
+    if mp and mp.start() > 0:
+        return _clean_name_tail(stripped[: mp.start()])
+
+    # 停止点4：集数标记
     me = re.search(r'[全更]\d+集', stripped)
     if me:
         name = stripped[: me.start()]
         return _clean_name_tail(name)
 
-    # 停止点4：【属性块
+    # 停止点5：【属性块
     mb = stripped.find("【")
     if mb > 0:
         return _clean_name_tail(stripped[:mb])
@@ -219,8 +224,11 @@ def _extract_name(title_line: str) -> str:
 
 
 def _clean_name_tail(name: str) -> str:
-    """去掉片名尾部的空格、标点、横线等"""
-    return re.sub(r'[\s\-_|·：:【（(]+$', "", name).strip()
+    """去掉片名尾部的空格、标点、横线，以及类型标注（AI短剧等）"""
+    name = re.sub(r'[\s\-_|·：:【（(]+$', "", name).strip()
+    # 去掉尾部常见类型描述词
+    name = re.sub(r'\s+(?:AI短剧|短剧|电影|纪录片|动漫|综艺)$', "", name).strip()
+    return name
 
 
 def _extract_year(title_line: str) -> str:
@@ -263,17 +271,29 @@ def _extract_episode(text: str) -> tuple[int, str]:
     """返回 (集数, 原始文本)；无集数返回 (0, '')"""
     # S##E## 格式优先（如 S01E13 / S01E01 - E13）
     for m in _SE_RE.finditer(text):
-        end_ep = m.group(2) or m.group(1)   # 有范围取末集，否则取当前集
+        end_ep = m.group(2) or m.group(1)
         num = int(end_ep)
         if num > 0:
             return num, m.group(0).strip()
-    # 中文集数格式
+    # 中文集数格式（EP24 / 全24集 / 更24集 / 第24集 …）
     for m in _EP_RE.finditer(text):
         num_str = m.group(1) or m.group(2) or m.group(3) or m.group(4)
         if num_str:
             num = int(num_str)
             if num > 0:
                 return num, m.group(0).strip()
+    # 简化格式：(32集) / 32集
+    m = re.search(r'[(（]?(\d+)\s*集[)）]?', text)
+    if m:
+        num = int(m.group(1))
+        if num > 0:
+            return num, m.group(0).strip()
+    # 更24（无"集"字后缀）
+    m = re.search(r'更\s*(\d+)(?!\s*集)', text)
+    if m:
+        num = int(m.group(1))
+        if num > 0:
+            return num, f"更新至{num}"
     # "全集"不含数字，视为 series 但集数未知
     if re.search(r'全集', text):
         return 1, "全集"
