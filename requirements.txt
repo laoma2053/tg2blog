@@ -5,3 +5,4 @@ pypinyin==0.53.0
 pydantic==2.10.6
 pydantic-settings==2.7.1
 python-dotenv==1.0.1
+openai==1.82.0

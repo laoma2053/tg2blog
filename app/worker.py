@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import filter as filter_mod
 from . import parse as parse_mod
+from . import ai_parse as ai_parse_mod
 from . import fetch as fetch_mod
 from . import imgbed as imgbed_mod
 from . import tmdb as tmdb_mod
@@ -98,9 +99,19 @@ async def _process(
         await notify.send_blocked(block_reason, cfg)
         return
 
-    # 3. 文本清洗（去除推广行、网盘链接、尾部导流）+ 解析
+    # 3. 文本清洗（去除推广行、网盘链接、尾部导流）
     clean = filter_mod.clean_text(msg.text)
-    parsed = parse_mod.parse(clean)
+
+    # 4. 解析（AI 优先，失败自动降级正则）
+    parsed = None
+    if cfg.ai_parse_enable:
+        try:
+            parsed = await ai_parse_mod.parse(clean, cfg)
+        except Exception as e:
+            logger.warning("🤖 AI 解析异常，降级正则 | msg_id=%d error=%s", msg.msg_id, e)
+    if parsed is None:
+        parsed = parse_mod.parse(clean)
+
     if not parsed:
         logger.warning("⚠️  解析失败跳过 | [%s] msg_id=%d", msg.channel_title or msg.channel, msg.msg_id)
         return

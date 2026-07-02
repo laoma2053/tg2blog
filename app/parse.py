@@ -76,6 +76,11 @@ class ParsedItem:
     is_series: bool = False
     skip_tmdb: bool = False           # 短剧/音乐等跳过 TMDB
     type_hint: str = ""               # 前置类型标签推断的分类（如"剧集"/"电影"）
+    # AI 解析补充字段（正则无法可靠提取，由 ai_parse 模块填充）
+    hdr_type: str = ""                # HDR格式：HDR10 / Dolby Vision / 杜比视界
+    encoding: str = ""                # 编码/码率：HQ高码率 / REMUX
+    subtitle: str = ""                # 字幕：内嵌简中 / 内嵌繁中 / 外挂字幕
+    audio: str = ""                   # 音轨：FLAC / DTS / Dolby Atmos / 国语
 
 
 # ── 公共入口 ──────────────────────────────────────────────────────────────────

@@ -217,7 +217,10 @@ def _make_html(item: MergedItem, slug: str) -> str:
     quality_label = item.quality_bucket.upper() if item.quality_bucket != "hd" else "HD"
     version_rows = [
         ("画质",     quality_label),
-        ("版本说明", item.extra_quality),
+        ("HDR",      item.hdr_type),
+        ("编码",     item.encoding),
+        ("字幕",     item.subtitle),
+        ("音轨",     item.audio),
         ("更新状态", item.episode_raw),
         ("体积",     item.size_per_ep),
     ]
@@ -273,10 +276,7 @@ def _make_html(item: MergedItem, slug: str) -> str:
 
     # 9. TMDB attribution
     if item.has_tmdb:
-        parts.append(
-            "<p><small>部分影片资料来自 TMDB。"
-            "本产品使用 TMDB API，但未经 TMDB 认可或认证。</small></p>"
-        )
+        parts.append("<p><small>影片资料来源：TMDB</small></p>")
 
     # 10. JSON-LD 结构化数据（放末尾，不影响主题摘要截取）
     parts.append(_make_json_ld(item, slug, site))

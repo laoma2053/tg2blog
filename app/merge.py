@@ -41,6 +41,12 @@ class MergedItem:
     poster_url: str
     has_tmdb: bool           # True 时文章底部需加 TMDB attribution
 
+    # ── AI 解析补充字段 ───────────────────────────────────────────────────────
+    hdr_type: str            # HDR格式：HDR10 / Dolby Vision / 杜比视界
+    encoding: str            # 编码/码率：HQ高码率 / REMUX
+    subtitle: str            # 字幕：内嵌简中 / 内嵌繁中 / 外挂字幕
+    audio: str               # 音轨：FLAC / DTS / Dolby Atmos / 国语
+
     # ── 图片（imgbed 上传后的 URL）────────────────────────────────────────────
     cover_image_url: str          # 封面：TG图床图 > TMDB海报 > 空
     extra_image_urls: list[str]   # 其余图片，放入"相关图片"区块
@@ -88,6 +94,11 @@ def merge(
         reviews=tmdb.reviews if tmdb else [],
         poster_url=tmdb.poster_url if tmdb else "",
         has_tmdb=tmdb is not None,
+        # AI 解析补充字段
+        hdr_type=parsed.hdr_type,
+        encoding=parsed.encoding,
+        subtitle=parsed.subtitle,
+        audio=parsed.audio,
         # 图片
         cover_image_url=cover,
         extra_image_urls=extras,

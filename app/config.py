@@ -54,6 +54,12 @@ class Config(BaseSettings):
     # 消息被过滤（黑名单）时是否通知
     notify_on_blocked: bool = Field(default=False)
 
+    # ── AI 解析 ───────────────────────────────────────────────────────────────
+    ai_parse_enable: bool = Field(default=False, description="启用 AI 解析，优先于正则；失败时自动降级")
+    ai_parse_api_key: str = Field(default="", description="AI 服务 API Key")
+    ai_parse_base_url: str = Field(default="https://api.siliconflow.cn/v1", description="兼容 OpenAI 接口的 base_url")
+    ai_parse_model: str = Field(default="Pro/deepseek-ai/DeepSeek-R1", description="模型名称，换模型只改此项")
+
     # ── 运行时 ────────────────────────────────────────────────────────────────
     db_path: str = Field(default="/data/db/tg2blog.sqlite")
     log_level: str = Field(default="INFO")
