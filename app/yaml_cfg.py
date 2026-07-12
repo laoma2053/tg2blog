@@ -31,8 +31,24 @@ def channels() -> list[str]:
 
 
 def site_url() -> str:
-    """主站地址，用于文章导流链接"""
+    """主站地址，用于文章备用导流链接"""
     return (_data.get("site") or {}).get("main_url", "https://www.zhuiju.us")
+
+
+def search_prefix() -> str:
+    """站内搜索地址前缀，拼接片名构成完整搜索 URL（例：https://www.zhuiju.us/s/）"""
+    site = _data.get("site") or {}
+    return site.get("search_prefix") or (site_url() + "/s/")
+
+
+def alt_search_label() -> str:
+    """备用搜索入口的显示标签"""
+    return ((_data.get("site") or {}).get("alt_search_label") or "备用搜索")
+
+
+def alt_search_prefix() -> str:
+    """备用搜索地址前缀（例：https://www.kuake.so/search?q=），为空则不渲染备用入口"""
+    return ((_data.get("site") or {}).get("alt_search_prefix") or "")
 
 
 def netdisk_links() -> dict[str, str]:

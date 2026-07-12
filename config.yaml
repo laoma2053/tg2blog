@@ -14,7 +14,20 @@ channels:
 
 # ── 主站与导流 ────────────────────────────────────────────────────────────────
 site:
+  # 主站地址，用于文章底部备用导流文字链接
   main_url: "https://www.zhuiju.us"
+
+  # 站内搜索前缀，文章中拼接片名生成搜索链接（结尾须含路径分隔符或 ?q= 等）
+  # 示例：https://www.zhuiju.us/s/ → 最终链接 https://www.zhuiju.us/s/片名
+  # 留空则自动降级为 main_url + /s/
+  search_prefix: "https://www.zhuiju.us/s/"
+
+  # 备用搜索入口的显示标签（文章中 <strong> 前缀文字）
+  alt_search_label: "备用（夸克）"
+
+  # 备用搜索前缀，留空则文章中不渲染备用搜索行
+  # 示例：https://www.kuake.so/search?q= → 最终链接 https://www.kuake.so/search?q=片名
+  alt_search_prefix: "https://pansou.de/search?q="
 
 # ── 网盘固定入口（所有文章底部统一展示）─────────────────────────────────────────
 netdisk:

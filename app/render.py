@@ -285,10 +285,29 @@ def _make_html(item: MergedItem, slug: str) -> str:
 
 
 def _build_resource_section(item: MergedItem, site: str, site_txt: str) -> str:
-    search_url = (
-        f"{site}/s/{quote(item.name)}"
-        "?utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
-    )
+    _UTM = "utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
+
+    # 站内搜索——前缀从 config.yaml site.search_prefix 读取
+    prefix = yaml_cfg.search_prefix()
+    sep = "&" if "?" in prefix else "?"
+    search_url = f"{prefix}{quote(item.name)}{sep}{_UTM}"
+    prefix_txt = prefix.replace("https://", "").replace("http://", "")
+    search_clean = f"{prefix_txt}{item.name}"
+
+    # 备用搜索——前缀为空时不渲染该行
+    alt_label = yaml_cfg.alt_search_label()
+    alt_prefix = yaml_cfg.alt_search_prefix()
+    alt_section = ""
+    if alt_prefix:
+        alt_sep = "&" if "?" in alt_prefix else "?"
+        alt_url = f"{alt_prefix}{quote(item.name)}{alt_sep}{_UTM}"
+        alt_prefix_txt = alt_prefix.replace("https://", "").replace("http://", "")
+        alt_clean = f"{alt_prefix_txt}{item.name}"
+        alt_section = (
+            f'<p><strong>{html.escape(alt_label)}：</strong>'
+            f'<a href="{html.escape(alt_url)}" rel="nofollow" target="_blank">{html.escape(alt_clean)}</a></p>'
+        )
+
     netdisk_labels = [
         ("夸克网盘", "quark"),
         ("百度网盘", "baidu"),
@@ -305,18 +324,14 @@ def _build_resource_section(item: MergedItem, site: str, site_txt: str) -> str:
         f'<p>如果入口暂时不可用，可以返回 <a href="{site}" rel="nofollow" target="_blank">'
         f"{html.escape(site_txt)}</a> 站内搜索页重新获取。</p>"
     )
-    kuake_url = f"https://www.kuake.so/search?q={quote(item.name)}&platform=quark&utm_source=typecho&utm_medium=seo&utm_campaign=tg_auto"
-    kuake_clean = f"www.kuake.so/search?q={item.name}"
-    search_clean = f"{site_txt}/s/{item.name}"
     return (
         "<h2>资源获取</h2>"
         "<h3>推荐入口</h3>"
         "<p>如果网盘链接失效或无法打开，建议优先通过站内搜索获取最新可用版本：</p>"
         f'<p><strong>站内搜索：</strong>'
         f'<a href="{search_url}" rel="nofollow" target="_blank">{html.escape(search_clean)}</a></p>'
-        f'<p><strong>备用（夸克）：</strong>'
-        f'<a href="{html.escape(kuake_url)}" rel="nofollow" target="_blank">{html.escape(kuake_clean)}</a></p>'
-        "<h3>网盘入口</h3>"
+        + alt_section
+        + "<h3>网盘入口</h3>"
         "<p>以下入口根据当前收录结果自动展示，资源有效性以实际打开页面为准：</p>"
         f"<ul>{netdisk_items}</ul>"
         + fallback
