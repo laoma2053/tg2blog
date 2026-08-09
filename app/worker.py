@@ -54,10 +54,17 @@ async def retry_loop(
         await asyncio.sleep(300)
         due = repo.get_retry_due(conn, now_iso(), cfg.retry_max)
         if due:
-            logger.info("🔁 待重试记录 | 数量=%d", len(due))
+            # 打印积压总量：本轮数量受 LIMIT 限制，只有总量能反映积压是否在收敛。
+            # 若总量长时间不降，说明重试没有真正执行（历史上曾因消息级去重空转）。
+            logger.info("🔁 待重试记录 | 本轮=%d 积压=%d",
+                        len(due), repo.count_retry_pending(conn, cfg.retry_max))
         for record in due:
             raw = _latest_raw_msg(conn, record["hash_key"])
             if not raw:
+                # tg_messages 里找不到原始消息，重试无从下手。必须标记 dead，
+                # 否则该记录会一直满足 get_retry_due 条件，每轮都被无效回捞。
+                repo.mark_dead(conn, record["hash_key"], "重试失败：tg_messages 中无对应原始消息")
+                logger.error("💀 无法重试 | hash_key=%s 原始消息已丢失，标记 dead", record["hash_key"])
                 continue
             await queue.put(RawMessage(
                 channel=raw["channel"],
@@ -66,6 +73,7 @@ async def retry_loop(
                 text=raw["raw_text"],
                 is_edit=False,
                 message=None,   # 重试不重新下载图片
+                is_retry=True,  # 豁免消息级去重，否则重试会被当作"已处理"跳过
             ))
 
 
@@ -86,8 +94,8 @@ async def _process(
     conn: object,
     cfg: Config,
 ) -> None:
-    # 1. 消息级去重（编辑消息不跳过，需要更新文章）
-    if not msg.is_edit and repo.msg_exists(conn, msg.channel, msg.msg_id):
+    # 1. 消息级去重（编辑消息和重试不跳过：前者需要更新文章，后者需要重发）
+    if not msg.is_edit and not msg.is_retry and repo.msg_exists(conn, msg.channel, msg.msg_id):
         logger.debug("⏭️  已处理跳过 | [%s] msg_id=%d", msg.channel_title or msg.channel, msg.msg_id)
         return
 

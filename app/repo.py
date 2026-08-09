@@ -158,19 +158,35 @@ def mark_dead(conn: sqlite3.Connection, hash_key: str, error: str) -> None:
 
 
 def get_retry_due(
-    conn: sqlite3.Connection, now: str, max_retry: int
+    conn: sqlite3.Connection, now: str, max_retry: int, limit: int = 20
 ) -> list[dict[str, Any]]:
-    """返回到期需要重试的记录（status=failed，重试次数未满，到期时间已到）"""
+    """
+    返回到期需要重试的记录（status=failed，重试次数未满，到期时间已到）。
+
+    limit 限制单轮批量：队列是单消费者串行的，一次放进太多重试会把新消息
+    长时间挡在后面。取最早到期的若干条，剩下的下一轮（5分钟后）继续。
+    """
     rows = conn.execute(
         """
         SELECT * FROM content_posts
         WHERE status='failed'
           AND retry_count < ?
           AND next_retry_at <= ?
+        ORDER BY next_retry_at ASC
+        LIMIT ?
         """,
-        (max_retry, now),
+        (max_retry, now, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_retry_pending(conn: sqlite3.Connection, max_retry: int) -> int:
+    """待重试记录总数（不含已到期判断）。仅用于日志观测积压是否在收敛。"""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM content_posts WHERE status='failed' AND retry_count < ?",
+        (max_retry,),
+    ).fetchone()
+    return row[0] or 0
 
 
 # ── TMDB 缓存 ─────────────────────────────────────────────────────────────────

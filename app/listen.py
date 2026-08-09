@@ -30,6 +30,9 @@ class RawMessage:
     is_edit: bool
     message: Any        # Telethon Message 对象，重试模式下为 None（跳过图片下载）
     channel_title: str = ""  # 频道显示名（中文名），仅用于日志/通知
+    # 由 retry_loop 重新入队时置 True。消息本就存在于 tg_messages（重试正是从那里
+    # 回捞的），若不豁免消息级去重，重试会在 pipeline 第一步就被跳过，永远发不出去。
+    is_retry: bool = False
 
 
 def start(client: Any, queue: asyncio.Queue, cfg: Config) -> None:
