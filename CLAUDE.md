@@ -118,10 +118,14 @@ AI 路径内部**仍会调用 `parse.parse`** 填充正则侧字段，所以正�
 6. 注册 `NewMessage` / `MessageEdited` 事件处理器
 7. 启动后台协程（保存 Task 引用，防止被 GC 回收）：`retry_loop` + `worker.run`
 8. 执行启动 catch-up（补偿最近 `catchup_hours` 小时的历史消息）
-9. 启动 `reconnect_watcher`（每30秒检测断线，重连时立即触发无时间截止的 catch-up）
+9. 启动 `reconnect_watcher`（每30秒检测断线，重连时立即触发无时间截止的 catch-up）+ `periodic_catchup`（每 `periodic_catchup_minutes` 分钟无条件 catch-up）
 10. `await tg_client.run_until_disconnected()` 保持运行
 
 `catch_up(hours=None)` 与 `catch_up(hours=N)` 语义不同：前者只用 `min_id`（每频道已处理的最大 msg_id）限边界，用于重连补偿；后者额外加时间截止，用于启动。
+
+**补偿为什么是两层**：`reconnect_watcher` 依赖观测到"断开→重连"状态翻转，至少有两类漏检——30 秒轮询间隙内完成的快速重连，以及连接始终正常但服务端不再推送 update（此时 `is_connected()` 全程为 True，任何基于断线检测的方案都失效）。`periodic_catchup` 不判断原因，只保证漏掉的消息最终被捞回，是收敛保证而非特定失效模式的补丁。两者互补：前者快（30秒），后者全（不依赖根因）。
+
+补偿的能力边界：只能捞回 msg_id 大于 `MAX(msg_id)` 的消息。若某条消息解析失败（未写入 `tg_messages`）而其后的消息已入库，边界被推高，中间的空洞永久补不回——解析失败本就是丢弃语义，不算缺陷，但排查"消息丢失"时需知道这一点。
 
 ## 关键设计约束
 

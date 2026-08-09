@@ -118,6 +118,39 @@ async def catch_up(
             logger.info("⏪ 补偿历史消息 | 频道=%s 发现=%d条", channel, count)
 
 
+async def periodic_catchup(
+    client: Any, queue: asyncio.Queue, conn: Any, cfg: Config
+) -> None:
+    """
+    定期无条件补偿 — 不判断为什么漏，只保证漏掉的消息最终会被捞回。
+
+    reconnect_watcher 只在能观测到"断开→重连"状态翻转时才补偿，至少有两类漏检：
+    30 秒轮询间隙内完成的快速重连，以及连接始终正常、但服务端不再推送 update
+    （此时 is_connected() 全程为 True，任何基于断线检测的方案都无效）。
+
+    正常情况下 min_id 已是最新，每个频道的 iter_messages 立即返回，开销可忽略；
+    重复消息由 pipeline 第一步的消息级去重挡掉，不会重复发文。
+
+    局限：只能补回 msg_id 大于 tg_messages 中已记录最大值的消息。中间的空洞
+    （如某条消息解析失败未入库、其后的消息已入库）补不回来。
+    """
+    interval = cfg.periodic_catchup_minutes
+    if interval <= 0:
+        logger.info("⏸️  定期补偿已禁用 | PERIODIC_CATCHUP_MINUTES=0")
+        return
+
+    logger.info("🕐 定期补偿已启用 | 间隔=%d分钟", interval)
+    while True:
+        await asyncio.sleep(interval * 60)
+        # 整体兜住异常：这个协程一旦死掉就静默失效，而它本身正是为了兜住
+        # 静默失效而存在的。catch_up 内部已按频道容错，此处防的是意外异常。
+        try:
+            logger.debug("🕐 定期补偿开始扫描")
+            await catch_up(client, queue, conn, cfg, hours=None)
+        except Exception as e:
+            logger.warning("⚠️  定期补偿失败（下轮重试）| error=%s", e)
+
+
 async def reconnect_watcher(
     client: Any, queue: asyncio.Queue, conn: Any, cfg: Config
 ) -> None:

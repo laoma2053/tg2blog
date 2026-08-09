@@ -14,7 +14,7 @@ from telethon import TelegramClient
 from .config import get_config
 from .db import get_conn, init_schema
 from . import yaml_cfg
-from .listen import catch_up, reconnect_watcher, start as listen_start
+from .listen import catch_up, periodic_catchup, reconnect_watcher, start as listen_start
 from .publish import TypechoClient
 from .worker import retry_loop, run as worker_run
 
@@ -78,8 +78,9 @@ async def main() -> None:
     # 9. catch-up：补偿最近 catchup_hours 内未处理的历史消息（有时间截止）
     await catch_up(tg_client, queue, conn, cfg, hours=cfg.catchup_hours)
 
-    # 10. 重连侦测：断线重连后立即补偿遗漏消息
+    # 10. 重连侦测（检测到断线时快速补偿）+ 定期补偿（兜住检测不到的漏消息场景）
     _tasks.append(asyncio.ensure_future(reconnect_watcher(tg_client, queue, conn, cfg)))
+    _tasks.append(asyncio.ensure_future(periodic_catchup(tg_client, queue, conn, cfg)))
 
     logger.info("🚀 服务启动完成 | 监听频道=%s", ", ".join(yaml_cfg.channels()))
 

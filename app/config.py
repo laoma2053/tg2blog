@@ -69,6 +69,9 @@ class Config(BaseSettings):
     db_path: str = Field(default="/data/db/tg2blog.sqlite")
     log_level: str = Field(default="INFO")
     catchup_hours: int = Field(default=24, description="启动时追溯历史消息的时间窗口（小时）")
+    # 定期无条件补偿的间隔。断线检测存在盲区（快速重连、连接正常但不推 update），
+    # 此项作为兜底保证漏掉的消息最终被捞回；0 表示禁用。
+    periodic_catchup_minutes: int = Field(default=30, description="定期补偿间隔（分钟），0=禁用")
     retry_max: int = Field(default=3, description="发布失败最大自动重试次数")
     max_posts_per_minute: int = Field(default=20)
 
