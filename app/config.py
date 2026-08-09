@@ -59,6 +59,11 @@ class Config(BaseSettings):
     ai_parse_api_key: str = Field(default="", description="AI 服务 API Key")
     ai_parse_base_url: str = Field(default="https://api.siliconflow.cn/v1", description="兼容 OpenAI 接口的 base_url")
     ai_parse_model: str = Field(default="Pro/deepseek-ai/DeepSeek-R1", description="模型名称，换模型只改此项")
+    # 推理模型的思考 token 也计入此额度，过小会导致正文被截断、content 返回空
+    ai_parse_max_tokens: int = Field(default=2048, description="AI 解析单次响应的最大 token 数")
+    # 透传给模型接口的额外参数（JSON 字符串），主要用于关闭推理模型的思考模式。
+    # 各平台参数名不统一，写法见 .env.example；留空则不传。
+    ai_parse_extra_body: str = Field(default="", description="额外请求参数，JSON 对象字符串")
 
     # ── 运行时 ────────────────────────────────────────────────────────────────
     db_path: str = Field(default="/data/db/tg2blog.sqlite")

@@ -1,3 +1,19 @@
+# ── 改动后如何生效 ────────────────────────────────────────────────────────────
+#
+# 修改 app/ 下的 Python 代码 → 必须重新构建镜像（代码是 COPY 进镜像的，不是挂载）
+#   docker compose up -d --build
+#
+# 修改 config.yaml（频道 / 过滤规则 / 网盘链接）→ 只需重启（已只读挂载）
+#   docker compose restart tg2blog
+#
+# 修改 .env（密钥 / 开关 / AI_PARSE_* 等）→ 重新创建容器以重载环境变量
+#   docker compose up -d
+#
+# 构建后确认运行状态
+#   docker compose logs -f tg2blog
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
 services:
   tg2blog:
     build: .

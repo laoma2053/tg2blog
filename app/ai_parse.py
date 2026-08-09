@@ -62,19 +62,31 @@ async def parse(text: str, cfg: Config) -> ParsedItem | None:
             model=cfg.ai_parse_model,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": text},
+                {"role": "user", "content": _compact(text)},
             ],
             temperature=0.0,
-            max_tokens=512,
+            max_tokens=cfg.ai_parse_max_tokens,
+            **_extra_body(cfg.ai_parse_extra_body),
         )
     except Exception as e:
         logger.warning("🤖 AI 解析 API 调用失败 | model=%s error=%s", cfg.ai_parse_model, e)
         return None
 
-    raw = (response.choices[0].message.content or "").strip()
+    choice = response.choices[0]
+    raw = (choice.message.content or "").strip()
+    # 推理模型（DeepSeek / Qwen3 thinking 等）把思考过程放在 reasoning_content，
+    # 正文被 max_tokens 截断时 content 为空，此时回退到思考内容里再找一次 JSON。
+    if not raw:
+        raw = (getattr(choice.message, "reasoning_content", None) or "").strip()
+
     ai_data = _extract_json(raw)
     if not ai_data:
-        logger.warning("🤖 AI 解析 JSON 提取失败 | raw=%.200s", raw)
+        logger.warning(
+            "🤖 AI 解析 JSON 提取失败 | finish_reason=%s completion_tokens=%s raw=%.200s",
+            choice.finish_reason,
+            getattr(response.usage, "completion_tokens", "?"),
+            raw or "<content 与 reasoning_content 均为空>",
+        )
         return None
 
     name = (ai_data.get("name") or "").strip()
@@ -114,16 +126,81 @@ async def parse(text: str, cfg: Config) -> ParsedItem | None:
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
 
+def _extra_body(raw: str) -> dict:
+    """
+    解析 AI_PARSE_EXTRA_BODY，返回可直接展开到 create() 的 kwargs。
+    主要用途是关闭推理模型的思考模式（各平台参数名不同，见 .env.example）。
+    配置格式错误时告警并忽略，不阻断解析。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.warning("🤖 AI_PARSE_EXTRA_BODY 不是合法 JSON，已忽略 | error=%s", e)
+        return {}
+    if not isinstance(data, dict) or not data:
+        logger.warning("🤖 AI_PARSE_EXTRA_BODY 必须是非空 JSON 对象，已忽略")
+        return {}
+    return {"extra_body": data}
+
+
+# "描述：" 行标志。该段落由正则负责提取，对 AI 无用
+_DESC_RE = re.compile(r'^\s*描述\s*[：:]')
+
+# 描述段落的结束标志，与 parse._extract_description 的判断保持一致
+_DESC_END_PREFIX = (
+    "📁", "🏷", "📢", "#", "名称", "资源标题",
+    "链接", "阿里", "夸克", "百度", "迅雷", "体积", "大小",
+)
+
+
+def _compact(text: str, max_chars: int = 500) -> str:
+    """
+    压缩送给 AI 的文本。
+
+    AI 只负责标题行里的语义字段，"描述：" 整段对它毫无用处，却会显著推高输入
+    长度——推理模型常把输入逐字复述进思考过程，导致 max_tokens 全耗在复述上、
+    正文返回空（日志表现为 finish_reason=length）。
+
+    description 仍由 regex_parse 从**完整原文**中提取，不受此裁剪影响。
+    """
+    kept: list[str] = []
+    skipping = False
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            skipping = False
+            continue
+        if _DESC_RE.match(s):
+            skipping = True
+            continue
+        if skipping:
+            if s.startswith(_DESC_END_PREFIX):
+                skipping = False
+            else:
+                continue
+        kept.append(s)
+    return "\n".join(kept)[:max_chars]
+
+
 def _extract_json(text: str) -> dict | None:
     """
     从模型响应中提取 JSON。
     兼容以下情况：
-    - Qwen3 思考模式输出的 <think>...</think> 前缀
+    - Qwen3 / DeepSeek 思考模式输出的 <think>...</think> 前缀
+    - 响应被 max_tokens 截断导致 <think> 未闭合
     - ```json 代码块包裹
+    - JSON 前后夹带说明文字
     - 裸 JSON 字符串
     """
-    # 剥离 Qwen3 / 其他模型的 <think>...</think> 推理块
+    if not text:
+        return None
+    # 剥离成对的 <think>...</think> 推理块
     text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
+    # 未闭合的 <think>（响应被截断）：只丢标签，保留后续可能存在的 JSON
+    text = text.replace('<think>', '').strip()
     # 去除 markdown 代码块
     m = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', text)
     if m:
@@ -131,7 +208,35 @@ def _extract_json(text: str) -> dict | None:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        return None
+        # 兜底：扫描首个花括号平衡的对象，容忍模型在 JSON 前后夹带解释文字
+        return _first_json_object(text)
+
+
+def _first_json_object(text: str) -> dict | None:
+    """扫描并返回文本中第一个花括号平衡且可解析的 JSON 对象。"""
+    start = text.find('{')
+    while start != -1:
+        depth, in_str, esc = 0, False, False
+        for i in range(start, len(text)):
+            c = text[i]
+            if esc:
+                esc = False
+            elif c == '\\':
+                esc = True
+            elif c == '"':
+                in_str = not in_str
+            elif not in_str:
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[start:i + 1])
+                        except json.JSONDecodeError:
+                            break
+        start = text.find('{', start + 1)
+    return None
 
 
 def _first_nonempty_line(text: str) -> str:
