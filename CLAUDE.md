@@ -56,25 +56,41 @@ python -c "from app.parse import parse; from app.merge import merge; from app.re
 
 ```
 listen → [queue] → worker._process:
-  1. 消息级去重（tg_messages.channel+msg_id）
+  1. 消息级去重（tg_messages.channel+msg_id；编辑消息不再豁免，见下）
   2. 广告过滤（filter.should_block）
   3. 文本清洗（filter.clean_text）
   4. 消息解析（AI 优先 → 正则降级 → ParsedItem）
   5. 查历史发布记录（repo.find_post → content_posts，hash_key/alt_hash_key 双向匹配）
   6. 保存消息记录（repo.save_msg，落库用第5步解析出的最终 key）
-  7. content_hash 比对（episode_num+extra_quality+size_per_ep，且记录 status='published' 时才直接返回）
+  7. 影片级跳过（typecho_cid 非空 → 直接返回，不做任何更新）
   8. 图片处理（fetch → imgbed，img_hash 防重复上传，可降级）
   9. TMDB 查询（带7天缓存，可降级，skip_tmdb 时跳过）
  10. 数据融合（merge.merge → MergedItem）
  11. 文章渲染（render.render → RenderedPost，含 JSON-LD）
- 12. Typecho 发布（MetaWeblog XMLRPC new_post / replace_post，受 max_posts_per_minute 限流）
+ 12. Typecho 发布（MetaWeblog XMLRPC new_post，受 max_posts_per_minute 限流）
  13. 保存发布记录（repo.save_post）
 ```
 
-**content_hash 比对必须在网络调用之前**（第7步）。`merge` 对 `episode_num` /
-`extra_quality` / `size_per_ep` 是原样透传，所以用 `ParsedItem` 算出的指纹与融合后
-完全一致。放到融合之后再判断，等于每条无变化的编辑消息都白跑一遍图片下载+上传和
-TMDB 查询——而编辑消息在影视频道里占比很高。
+**一部影片只发一次，发出去就再也不动。** 这是刻意的产品决策，不是未完成的功能：
+第 12 步只有 `new_post` 一条路径，没有更新分支。剧集从 EP 24 更新到 25 时，站上那篇
+文章会一直停在 EP 24。
+
+**两层拦截，缺一不可**：
+
+- **第 1 步（消息级）**——编辑消息与原消息共用同一个 `msg_id`，这里不再为 `is_edit`
+  开口子。已处理消息的编辑版本在此直接死掉，**连 AI 解析、图片下载、TMDB 查询都不跑**。
+  影视频道里编辑消息占比很高，这是省钱的大头。
+  `listen.py` 仍注册 `MessageEdited`：极少数情况下原始版本我们没见过（启动前就被编辑
+  过、或 catch-up 按 msg_id 边界漏掉），那时它应当被当作新消息处理。
+- **第 7 步（影片级）**——同一部影片换个频道重发、或以另一条消息再来一次时 `msg_id`
+  不同，第 1 步拦不住，靠 `find_post` 的结果拦。
+
+**第 7 步的判据必须是 `typecho_cid` 非空，不能用 `status`**。`repo.mark_failed` 是
+`INSERT ... ON CONFLICT`，首次发布失败时会建行且 `typecho_cid` 为 NULL。按 status 判
+会把"从没成功发出去过"的记录也跳掉，它们将永远发不出去。
+
+**第 7 步必须在第 6 步之后**。提前 return 会让 `tg_messages` 不落行，`msg_exists` 下次
+拦不住、catch-up 的 `min_id` 边界也推不动——同一条消息每次重启都要重新解析一遍。
 
 **单消费者串行队列**（见 `doc/ADR.md` ADR-002）：同一影片短时间内的多条消息若并发处理，会各自判断"文章不存在"从而发出重复文章。串行从根本上消除该竞争，因此**增加并发消费者会破坏去重正确性**。
 
@@ -109,8 +125,10 @@ AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。
 
 **两级去重**，务必区分：
 
-1. **消息级去重**：`tg_messages(channel, msg_id) UNIQUE`，新消息直接跳过；编辑消息（`is_edit=True`）不受此限制，走完整 pipeline。
-2. **内容级去重**：`content_hash = MD5(episode_num|extra_quality|size_per_ep)[:16]`，同一影片三字段均未变化则不触发 Typecho 更新，避免无效写入。
+1. **消息级去重**：`tg_messages(channel, msg_id) UNIQUE`。编辑消息**不再豁免**——它与原消息共用 `msg_id`，不做更新之后没有处理价值。只有重试（`is_retry=True`）豁免，因为它需要重发。
+2. **影片级去重**：`find_post` 命中且 `typecho_cid` 非空 → 直接返回。一部影片只有一篇文章，永不更新。
+
+`content_hash`（`MD5(episode_num|extra_quality|size_per_ep)[:16]`）**仍在计算并落库**，但不再参与任何判断——影片级去重已经覆盖了它原来的作用。保留它是为了排查时能看出记录对应的是哪一版内容。
 
 **去重键**：`hash_key = normalize(name) + "_" + year + "_4k"`，唯一标识一部影片（跨频道共享）。`normalize` 会去空格并转小写。片名提取规则一旦变化，`hash_key` 随之变化，同一影片会被当作新影片重新发文——改 `parse._extract_name` 或 AI prompt 的 `name` 规则时务必意识到这一点。
 
@@ -120,22 +138,20 @@ AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。
 2. `alt_hash_key = 本次 key` —— 历史记录由另一条解析路径创建，本次 key 是它的别名
 3. `hash_key 或 alt_hash_key = 本次备用键` —— 反向匹配
 
-命中 2/3 时 worker 会**改用历史记录的 `hash_key`** 继续后续流程，从而更新同一行、复用同一个 `typecho_cid`，走更新分支而不是新建。`save_post` 每次都把"另一条路径的 key"写回 `alt_hash_key`（本次为空时保留历史值，避免降级路径抹掉已建立的别名）。绕过这套查找会直接导致 Typecho 重复建文。
+命中 2/3 时 worker 会**改用历史记录的 `hash_key`** 继续后续流程，让 `save_post` 落在同一行，不会因 key 漂移而新插一行、进而再发一篇重复文章。`save_post` 每次都把"另一条路径的 key"写回 `alt_hash_key`（本次为空时保留历史值，避免降级路径抹掉已建立的别名）。绕过这套查找会直接导致 Typecho 重复建文。
 
 **图片去重**：`tg_img_hash` 存上次上传图片的 MD5，新消息图片 MD5 相同则直接复用旧 URL，不重复上传。
 
 ## 重试逻辑
 
 只有 Typecho 发布失败才进入重试队列（其他降级不重试）：
-- 失败记录写入 `content_posts`，`status=failed`，`next_retry_at` 按指数退避（`2^n` 分钟）递增。
-- `retry_loop` 每5分钟扫描到期记录，重新入队时 `message=None`（跳过图片重下载，直接复用 `content_posts` 中的历史 URL）。
+- 失败记录写入 `content_posts`，`status=failed`，`next_retry_at` 按指数退避（`2^n` 分钟）递增。`mark_failed` 是 `INSERT ... ON CONFLICT`，所以首次发布失败也会建行，此时 `typecho_cid` 为 NULL。
+- `retry_loop` 每5分钟扫描到期记录，重新入队时 `message=None`。
 - 超过 `retry_max`（默认3次）进入 `status=dead`，触发飞书告警，停止自动重试。
 
-**第 7 步的 content_hash 短路必须带 `status='published'` 条件**。失败记录的
-`content_hash` 也可能与本次相同（内容变化后是发布环节才失败的），不加这个条件时重试
-会在第 7 步静默返回，走不到发布 → `_handle_failure` 不执行 → `retry_count` 不增长 →
-`get_retry_due` 的 `retry_count < retry_max` 恒成立 → `retry_max` 死信兜底永不触发。
-症状是「积压=N 恒定不降、每 5 分钟无效回捞一次」，且每轮白烧一次 AI 解析请求。
+**`retry_loop` 入队前必须先结算「`typecho_cid` 已有值」的记录**（`repo.mark_settled`）。这类记录是旧代码更新失败留下的：文章其实已经在站上，但 `status` 停在 `failed`。不做更新之后它永远不会被重发（第 7 步按 cid 跳过），若不结算，`get_retry_due` 会每 5 分钟无效回捞一次、积压恒定不降。放在 `retry_loop` 而不是等 `_process`，是为了连那一轮的 AI 解析也省掉。
+
+**重试会丢图片**（已知遗留）。重试入队时 `message=None`，`_handle_images` 回落到 `existing` 里的历史 URL；而首次发布失败的记录从没调过 `save_post`，没有历史 URL——所以重试成功后发出的是无图文章。不做更新之后「首发失败」成了唯一的重试形态，这个缺陷也就从边缘情况升格为唯一路径。要修得在重试时用 `tg_client.get_messages(channel, ids=msg_id)` 把媒体重新拉回来。
 
 ## 启动序列（main.py）
 
@@ -166,9 +182,23 @@ AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。
 
 **Slug 生成**：`pypinyin` 拼音转写，格式 `{拼音}-{year}-4k`（例：`tai-ping-nian-2026-4k`）。禁止用 URL-encoded 中文作 slug。
 
-**Typecho 协议**：使用 MetaWeblog XMLRPC（`metaWeblog.newPost` / `blogger.deletePost`），`xmlrpc.client` 在线程池（`run_in_executor`）中执行以避免阻塞 asyncio 事件循环。所有 XMLRPC 异常统一包装为 `PublishError` 供 worker 捕获后进入重试。
+**Typecho 协议**：使用 MetaWeblog XMLRPC（`metaWeblog.getCategories` / `metaWeblog.newPost`），`xmlrpc.client` 在线程池（`run_in_executor`）中执行以避免阻塞 asyncio 事件循环。所有 XMLRPC 异常统一包装为 `PublishError` 供 worker 捕获后进入重试。
 
-**更新文章 = 删旧建新，不用 `editPost`**。Typecho 1.3.0 的 `metaWeblog.editPost` 根本不更新：它把 cid 塞进 `$input` 后直接调 `PostEdit->writePost()`，绕过了 `action()` → `prepare()`，`$this->cid` 从未被填上，于是 `EditTrait::publish()` 里的 `have()` 恒为 false，走 `insert()` 新建。`wp.editPost` / `wp.editPage` / `blogger.editPost` 全部转发到同一条路径，同样无效——这是上游缺陷，**不修改 Typecho 核心 PHP**。因此 `publish.replace_post` 先 `blogger.deletePost` 再 `new_post`：删除会释放旧 slug，新建重新拿到干净的 slug，固定链接不变（已实测）。副作用是 **`typecho_cid` 每次更新都会变**，`content_posts.typecho_cid` 随之刷新；`deletePost` 对不存在的 cid 也返回 true，所以"删成功→建失败"后重试是安全的。排查站上重复文章时，先确认是不是这条链路，再怀疑 `hash_key` 漂移。
+**不做文章更新**。`TypechoClient` 只有 `new_post` 一个写方法，没有 `edit_post` / `replace_post` / `delete_post`。想加回更新功能之前，先读下面这条——它是花了很大力气挖出来的结论，直接决定实现方式：
+
+> Typecho 1.3.0 的 `metaWeblog.editPost` **根本不更新**：它把 cid 塞进 `$input` 后直接调
+> `PostEdit->writePost()`，绕过了 `action()` → `prepare()`，`$this->cid` 从未被填上，
+> 于是 `EditTrait::publish()` 里的 `have()` 恒为 false，走 `insert()` 新建。
+> `wp.editPost` / `wp.editPage` / `blogger.editPost` 全部转发到同一条路径，同样无效。
+> 已实测：对同一 cid 连发两次 `editPost`，得到两个新 cid。这是上游缺陷，
+> **不修改 Typecho 核心 PHP**。
+>
+> 唯一可行的更新方式是 `blogger.deletePost` + `newPost`（删旧建新）：删除会释放旧
+> slug，新建能重新拿到干净的 slug，固定链接不变（已实测）。副作用是 `typecho_cid`
+> 每次更新都会变。`deletePost` 对不存在的 cid 也返回 true，所以"删成功→建失败"后
+> 重试是安全的。
+
+站上历史遗留的重复文章就是 `editPost` 这个缺陷造成的（每次"更新"都新建一篇），清理方案见 `doc/sql/typecho_dedup_cleanup.sql`。
 
 **不传 `dateCreated`**：Typecho 把收到的时间戳按服务器本地时区（CST）解释，传 UTC 字符串会让 `created` 恒早 8 小时。省略该字段让 Typecho 自己取当前时间。
 
@@ -176,7 +206,7 @@ AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。
 
 **模块加载时初始化**：`filter.py` 的 `_BLOCK_KEYWORDS` / `_BLOCK_RES` / `_CLEAN_RULES` 与 `yaml_cfg.py` 的 `_data` 均在模块导入时求值，修改 `config.yaml` 后必须重启进程。
 
-**render.py 输出**：HTML 正文含4段 JSON-LD（BlogPosting / BreadcrumbList / TVSeries|Movie / FAQPage），面向 SEO/GEO 优化，无 JS 依赖，全静态可抓取。JSON-LD 置于正文**末尾**，避免 Typecho 主题自动截取摘要时把结构化数据带入摘要。文章标题格式为 `已更新：{raw_title} {随机网盘后缀}`——后缀从4个网盘名中随机选取，因此同一篇文章每次更新标题都会变，这是有意为之。
+**render.py 输出**：HTML 正文含4段 JSON-LD（BlogPosting / BreadcrumbList / TVSeries|Movie / FAQPage），面向 SEO/GEO 优化，无 JS 依赖，全静态可抓取。JSON-LD 置于正文**末尾**，避免 Typecho 主题自动截取摘要时把结构化数据带入摘要。文章标题格式为 `已更新：{raw_title} {随机网盘后缀}`——后缀从4个网盘名中随机选取。不做文章更新之后，标题在建文时定下就不再变化（这个随机后缀原本是为"每次更新换一个"设计的，现在等于每部影片随机分配一个）。
 
 ## SQLite 表结构要点
 
@@ -208,8 +238,8 @@ AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。
 
 ## Typecho 侧的 MySQL 负载
 
-本项目**从不直连 MySQL**（依赖里没有任何 MySQL 驱动），XMLRPC 调用面只有三个方法：
-`metaWeblog.getCategories`（启动一次）/ `newPost` / `blogger.deletePost`。查重完全在本地
+本项目**从不直连 MySQL**（依赖里没有任何 MySQL 驱动），XMLRPC 调用面只有两个方法：
+`metaWeblog.getCategories`（启动一次）/ `metaWeblog.newPost`。查重完全在本地
 SQLite 完成，不存在"拉取全部历史文章到内存遍历"这类调用。
 
 因此在 `b_zhuiju_us` 库里抓到的无索引 SQL（`typecho_contents` 按
@@ -218,7 +248,7 @@ SQLite 完成，不存在"拉取全部历史文章到内存遍历"这类调用�
 
 1. 补索引 —— DDL、EXPLAIN 对比、回滚语句见 `doc/sql/typecho_index.sql`
 2. 降低调用频率 —— `MAX_POSTS_PER_MINUTE` 限流（`publish._RateLimiter`，作用于
-   newPost 和 deletePost）+ `find_post` 双向去重减少无谓的 newPost
+   newPost）+ 两层拦截把调用量压到「每部新影片 1 次」
 
 排查这类问题时，先确认 SQL 的发出方是谁，再决定改哪一层。**不要修改 Typecho 核心
 PHP**。
@@ -230,7 +260,9 @@ PHP**。
 ## 验收关键场景
 
 1. 同一 TG 消息重复触发 → 不重复发文（消息级去重）
-2. TG 消息 EP 从 24 编辑为 25 → 站上仍只有一篇、URL 不变（cid 会变，见"更新文章 = 删旧建新"）
-3. 关闭 `TMDB_ENABLE` / `IMGBED_ENABLE` / `AI_PARSE_ENABLE` → 系统仍能发布纯文本文章
-4. Typecho 发布失败 → 按指数退避重试，超限后触发飞书告警
-5. AI 解析成功建文后，下一条消息 AI 失败降级正则（hash_key 变化）→ 仍更新同一篇文章，`content_posts` 不新增行
+2. TG 消息 EP 从 24 编辑为 25 → **站上文章不变，仍停在 EP 24**；日志只出现 `⏭️  已处理跳过`，不产生任何 Typecho RPC 调用
+3. 同一影片在另一个频道重新发布（`msg_id` 不同）→ 日志出现 `⏭️  已发布跳过`，站上不新增文章
+4. 关闭 `TMDB_ENABLE` / `IMGBED_ENABLE` / `AI_PARSE_ENABLE` → 系统仍能发布纯文本文章
+5. Typecho 发布失败 → 按指数退避重试，超限后触发飞书告警
+6. AI 解析成功建文后，同一影片的新消息 AI 失败降级正则（hash_key 变化）→ 靠 `alt_hash_key` 反向命中，不新增文章、`content_posts` 不新增行
+7. 存量里 `typecho_cid` 有值但 `status='failed'` 的记录 → `retry_loop` 一轮内结算为 `published`，积压数下降且不再回捞
