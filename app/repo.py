@@ -69,6 +69,39 @@ def get_post(conn: sqlite3.Connection, hash_key: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def find_post(
+    conn: sqlite3.Connection, hash_key: str, alt_hash_key: str = ""
+) -> dict[str, Any] | None:
+    """
+    双向查找发布记录，用于抵消 AI / 正则两条解析路径产出的 hash_key 差异。
+
+    AI 与正则是两套独立的片名+年份提取器，同一部影片经常算出不同的 key
+    （典型：年份没有括号时正则取不到 year）。AI 偶发失败会让 key 在两个值之间
+    来回切换，只按主键查会判定"没有历史记录"从而重复建文。
+
+    查找顺序（全部走唯一索引或 alt 索引，命中即返回）：
+      1. hash_key      = 本次 key      —— 常规命中
+      2. alt_hash_key  = 本次 key      —— 历史记录由另一条路径创建，本次是它的备用键
+      3. hash_key / alt_hash_key = 本次备用键 —— 反向匹配
+    """
+    row = conn.execute(
+        "SELECT * FROM content_posts WHERE hash_key=?", (hash_key,)
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT * FROM content_posts WHERE alt_hash_key=? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (hash_key,),
+        ).fetchone()
+    if row is None and alt_hash_key:
+        row = conn.execute(
+            "SELECT * FROM content_posts WHERE hash_key=? OR alt_hash_key=? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (alt_hash_key, alt_hash_key),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def save_post(
     conn: sqlite3.Connection,
     hash_key: str,
@@ -81,6 +114,7 @@ def save_post(
     extra_urls: list[str],
     img_hash: str,
     tmdb: dict | None,
+    alt_hash_key: str = "",
 ) -> None:
     """新建或更新发布记录（发布成功时调用）"""
     now = now_iso()
@@ -89,8 +123,9 @@ def save_post(
         INSERT INTO content_posts
             (hash_key, typecho_cid, typecho_url, last_title, last_episode_num,
              content_hash, cover_image_url, extra_image_urls, tg_img_hash,
-             tmdb_json, status, retry_count, next_retry_at, error_last, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', 0, NULL, NULL, ?, ?)
+             tmdb_json, alt_hash_key, status, retry_count, next_retry_at, error_last,
+             created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', 0, NULL, NULL, ?, ?)
         ON CONFLICT(hash_key) DO UPDATE SET
             typecho_cid      = excluded.typecho_cid,
             typecho_url      = excluded.typecho_url,
@@ -101,6 +136,8 @@ def save_post(
             extra_image_urls = excluded.extra_image_urls,
             tg_img_hash      = excluded.tg_img_hash,
             tmdb_json        = excluded.tmdb_json,
+            -- 本次没有备用键时保留历史值，避免降级路径把已建立的别名抹掉
+            alt_hash_key     = COALESCE(NULLIF(excluded.alt_hash_key, ''), content_posts.alt_hash_key),
             status           = 'published',
             retry_count      = 0,
             next_retry_at    = NULL,
@@ -111,6 +148,7 @@ def save_post(
          json.dumps(extra_urls, ensure_ascii=False),
          img_hash,
          json.dumps(tmdb, ensure_ascii=False) if tmdb else None,
+         alt_hash_key,
          now, now),
     )
     conn.commit()

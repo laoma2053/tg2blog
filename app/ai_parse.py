@@ -99,6 +99,14 @@ async def parse(text: str, cfg: Config) -> ParsedItem | None:
     # 正则解析补充结构化字段（画质档位、tags、体积、描述、原始标题行）
     regex_result = regex_parse(text)
 
+    # 正则侧算出的去重键。与 AI 侧不同则记为 alt_hash_key，供 worker 兜底查找：
+    # AI 一旦降级，hash_key 会切到正则版本，没有这层兜底同一部影片会被重复建文。
+    ai_key = make_hash_key(name, year)
+    regex_key = regex_result.hash_key if regex_result else ""
+    alt_key = regex_key if regex_key and regex_key != ai_key else ""
+    if alt_key:
+        logger.debug("🔑 去重键分歧 | ai=%s regex=%s", ai_key, alt_key)
+
     return ParsedItem(
         # AI 语义字段
         name=name,
@@ -120,7 +128,8 @@ async def parse(text: str, cfg: Config) -> ParsedItem | None:
         description=regex_result.description if regex_result else "",
         raw_title=regex_result.raw_title if regex_result else _first_nonempty_line(text),
         # 派生字段
-        hash_key=make_hash_key(name, year),
+        hash_key=ai_key,
+        alt_hash_key=alt_key,
     )
 
 

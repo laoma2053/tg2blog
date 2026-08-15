@@ -60,16 +60,21 @@ listen → [queue] → worker._process:
   2. 广告过滤（filter.should_block）
   3. 文本清洗（filter.clean_text）
   4. 消息解析（AI 优先 → 正则降级 → ParsedItem）
-  5. 保存消息记录（repo.save_msg）
-  6. 查历史发布记录（repo.get_post → content_posts）
-  7. 图片处理（fetch → imgbed，img_hash 防重复上传，可降级）
-  8. TMDB 查询（带7天缓存，可降级，skip_tmdb 时跳过）
-  9. 数据融合（merge.merge → MergedItem）
- 10. 文章渲染（render.render → RenderedPost，含 JSON-LD）
- 11. content_hash 比对（episode_num+extra_quality+size_per_ep，无变化则跳过发布）
- 12. Typecho 发布（MetaWeblog XMLRPC new_post / edit_post）
+  5. 查历史发布记录（repo.find_post → content_posts，hash_key/alt_hash_key 双向匹配）
+  6. 保存消息记录（repo.save_msg，落库用第5步解析出的最终 key）
+  7. content_hash 比对（episode_num+extra_quality+size_per_ep，无变化则直接返回）
+  8. 图片处理（fetch → imgbed，img_hash 防重复上传，可降级）
+  9. TMDB 查询（带7天缓存，可降级，skip_tmdb 时跳过）
+ 10. 数据融合（merge.merge → MergedItem）
+ 11. 文章渲染（render.render → RenderedPost，含 JSON-LD）
+ 12. Typecho 发布（MetaWeblog XMLRPC new_post / edit_post，受 max_posts_per_minute 限流）
  13. 保存发布记录（repo.save_post）
 ```
+
+**content_hash 比对必须在网络调用之前**（第7步）。`merge` 对 `episode_num` /
+`extra_quality` / `size_per_ep` 是原样透传，所以用 `ParsedItem` 算出的指纹与融合后
+完全一致。放到融合之后再判断，等于每条无变化的编辑消息都白跑一遍图片下载+上传和
+TMDB 查询——而编辑消息在影视频道里占比很高。
 
 **单消费者串行队列**（见 `doc/ADR.md` ADR-002）：同一影片短时间内的多条消息若并发处理，会各自判断"文章不存在"从而发出重复文章。串行从根本上消除该竞争，因此**增加并发消费者会破坏去重正确性**。
 
@@ -88,7 +93,17 @@ AI 路径内部**仍会调用 `parse.parse`** 填充正则侧字段，所以正�
 
 `ai_parse._extract_json` 需容忍 Qwen3 等模型的 `<think>...</think>` 前缀与 ```json 代码块包裹。换模型只改 `AI_PARSE_MODEL`，不改代码。
 
-**`ParsedItem` 是跨模块契约**：新增字段需同步改动 `parse.py`（dataclass + 提取逻辑）、`ai_parse.py`（system prompt + 构造）、`merge.py`（透传到 `MergedItem`）、`render.py`（渲染）四处。
+**`ParsedItem` 是跨模块契约**：新增字段需同步改动 `parse.py`（dataclass + 提取逻辑）、`ai_parse.py`（system prompt + 构造）、`merge.py`（透传到 `MergedItem`）、`render.py`（渲染）四处。例外是 `alt_hash_key`：它只服务于 worker 的去重查找，不进 `MergedItem`，也不参与渲染。
+
+**AI 与正则会算出不同的 `hash_key`**。两者是各自独立的片名+年份提取器，同一条消息经常产出不同结果，最典型的是年份不带括号时正则的 `_extract_year` 取不到 `year`：
+
+```
+"云秀行 2026 4K【更12集】"
+  AI   → name=云秀行 year=2026 → 云秀行_2026_4k
+  正则 → name=云秀行 2026 year=""  → 云秀行2026__4k
+```
+
+AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。因此 `ai_parse` 会把正则侧算出的 key 记入 `alt_hash_key`，worker 用 `repo.find_post` 双向匹配（见下）。**不要把 `hash_key` 改成只由某一条路径生成**——那会让所有存量文章的 key 变化，等于把整站重发一遍。
 
 ## 去重与更新机制
 
@@ -98,6 +113,14 @@ AI 路径内部**仍会调用 `parse.parse`** 填充正则侧字段，所以正�
 2. **内容级去重**：`content_hash = MD5(episode_num|extra_quality|size_per_ep)[:16]`，同一影片三字段均未变化则不触发 Typecho 更新，避免无效写入。
 
 **去重键**：`hash_key = normalize(name) + "_" + year + "_4k"`，唯一标识一部影片（跨频道共享）。`normalize` 会去空格并转小写。片名提取规则一旦变化，`hash_key` 随之变化，同一影片会被当作新影片重新发文——改 `parse._extract_name` 或 AI prompt 的 `name` 规则时务必意识到这一点。
+
+**查找走 `repo.find_post(conn, hash_key, alt_hash_key)`，不要直接用 `get_post`**。它按三步匹配，命中即返回：
+
+1. `hash_key = 本次 key` —— 常规命中
+2. `alt_hash_key = 本次 key` —— 历史记录由另一条解析路径创建，本次 key 是它的别名
+3. `hash_key 或 alt_hash_key = 本次备用键` —— 反向匹配
+
+命中 2/3 时 worker 会**改用历史记录的 `hash_key`** 继续后续流程，从而更新同一行、复用同一个 `typecho_cid`，走 `editPost` 而不是 `newPost`。`save_post` 每次都把"另一条路径的 key"写回 `alt_hash_key`（本次为空时保留历史值，避免降级路径抹掉已建立的别名）。绕过这套查找会直接导致 Typecho 重复建文。
 
 **图片去重**：`tg_img_hash` 存上次上传图片的 MD5，新消息图片 MD5 相同则直接复用旧 URL，不重复上传。
 
@@ -152,7 +175,7 @@ AI 路径内部**仍会调用 `parse.parse`** 填充正则侧字段，所以正�
 | 表 | 主键/唯一约束 | 用途 |
 |---|---|---|
 | `tg_messages` | `UNIQUE(channel, msg_id)` | 消息级去重；存原始文本和解析结果 |
-| `content_posts` | `UNIQUE(hash_key)` | 影片级发布状态；追踪 `typecho_cid`、重试状态、`content_hash`、`tg_img_hash` |
+| `content_posts` | `UNIQUE(hash_key)` + `INDEX(alt_hash_key)` | 影片级发布状态；追踪 `typecho_cid`、重试状态、`content_hash`、`tg_img_hash`、`alt_hash_key` |
 | `tmdb_cache` | `UNIQUE(hash_key)` | TMDB 查询缓存，有效期 `tmdb_cache_days`（默认7天） |
 
 唯一例外：`worker._latest_raw_msg` 直接查询 `tg_messages`（重试时回捞原始消息）。新增查询请加到 `repo.py`。
@@ -169,8 +192,30 @@ AI 路径内部**仍会调用 `parse.parse`** 填充正则侧字段，所以正�
 - `DB_PATH`（默认 `/data/db/tg2blog.sqlite`）/ `SESSION_DIR`（Telethon session 持久化目录）
 - `CATCHUP_HOURS`（默认24，启动时追溯历史消息的时间窗口）
 - `FEISHU_WEBHOOK`（飞书机器人 URL，不填则禁用所有通知）
+- `MAX_POSTS_PER_MINUTE`（默认20，0=不限流）/ `TYPECHO_TIMEOUT`（默认30秒）——见下节
 
 `config.py` 的 `_validate_enabled_services` 校验联动：启用 ImgBed 必须给 `IMGBED_BASE` 且至少一种认证方式；启用 TMDB 必须给 token。AI 无此校验，Key 缺失时靠运行期降级兜底。
+
+## Typecho 侧的 MySQL 负载
+
+本项目**从不直连 MySQL**（依赖里没有任何 MySQL 驱动），XMLRPC 调用面只有三个方法：
+`metaWeblog.getCategories`（启动一次）/ `newPost` / `editPost`。查重完全在本地 SQLite
+完成，不存在"拉取全部历史文章到内存遍历"这类调用。
+
+因此在 `b_zhuiju_us` 库里抓到的无索引 SQL（`typecho_contents` 按
+`type+parent+authorId` 扫全表、`typecho_metas` 按 `type+name` 扫全表）**全部由 Typecho
+核心 PHP 在处理 newPost/editPost 时自己发出**，客户端改不掉。能做的只有两件事：
+
+1. 补索引 —— DDL、EXPLAIN 对比、回滚语句见 `doc/sql/typecho_index.sql`
+2. 降低调用频率 —— `MAX_POSTS_PER_MINUTE` 限流（`publish._RateLimiter`，只作用于
+   newPost/editPost）+ `find_post` 双向去重减少无谓的 newPost
+
+排查这类问题时，先确认 SQL 的发出方是谁，再决定改哪一层。**不要修改 Typecho 核心
+PHP**。
+
+`TYPECHO_TIMEOUT` 给 XMLRPC 加了 socket 超时（标准库默认无超时）。MySQL 打满时单次
+发布可能长时间不返回，没有超时会让串行消费协程被永久阻塞，队列随之无界堆积——这条
+链路会把"慢"放大成"雪崩"。超时后走正常的 `PublishError` 重试路径。
 
 ## 验收关键场景
 
@@ -178,3 +223,4 @@ AI 路径内部**仍会调用 `parse.parse`** 填充正则侧字段，所以正�
 2. TG 消息 EP 从 24 编辑为 25 → 更新同一篇文章（编辑消息触发 content_hash 变更）
 3. 关闭 `TMDB_ENABLE` / `IMGBED_ENABLE` / `AI_PARSE_ENABLE` → 系统仍能发布纯文本文章
 4. Typecho 发布失败 → 按指数退避重试，超限后触发飞书告警
+5. AI 解析成功建文后，下一条消息 AI 失败降级正则（hash_key 变化）→ 仍更新同一篇文章，`content_posts` 不新增行

@@ -73,6 +73,12 @@ class ParsedItem:
     description: str = ""             # 描述：字段内容
     raw_title: str = ""
     hash_key: str = ""
+    # 备用去重键：AI 路径下由正则算出的 hash_key（两者不同时才有值）。
+    # AI 与正则是两套独立的片名/年份提取器，同一部影片的产出经常不一致
+    # （典型：年份无括号时正则取不到 year）。AI 偶发失败降级正则后 hash_key
+    # 会跟着变，导致 get_post 查不到历史记录、重复建文。worker 在主键未命中
+    # 时用它兜一次，只影响查找，不改变任何已有记录的 hash_key。
+    alt_hash_key: str = ""
     is_series: bool = False
     skip_tmdb: bool = False           # 短剧/音乐等跳过 TMDB
     type_hint: str = ""               # 前置类型标签推断的分类（如"剧集"/"电影"）

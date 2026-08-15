@@ -85,5 +85,22 @@ def init_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT    NOT NULL
         );
     """)
+    _migrate(conn)
     conn.commit()
     logger.info("🗄️  数据库初始化完成")
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """
+    增量迁移，幂等。SQLite 的 ALTER TABLE ADD COLUMN 没有 IF NOT EXISTS，
+    先查 PRAGMA 再决定是否执行。
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(content_posts)")}
+    if "alt_hash_key" not in cols:
+        # 备用去重键：AI 与正则两条解析路径对同一部影片可能算出不同的 hash_key，
+        # 记下另一条路径的 key，任一路径都能找回同一条发布记录，避免重复建文。
+        conn.execute("ALTER TABLE content_posts ADD COLUMN alt_hash_key TEXT")
+        logger.info("🗄️  迁移完成 | content_posts.alt_hash_key")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_post_alt_hash ON content_posts(alt_hash_key)"
+    )

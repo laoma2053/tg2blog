@@ -29,6 +29,9 @@ class Config(BaseSettings):
     typecho_user: str = Field(..., description="Typecho 后台账号")
     typecho_password: str = Field(..., description="Typecho 后台密码")
     typecho_default_category: str = Field(default="综合")
+    # XMLRPC socket 超时（秒）。标准库默认无超时，Typecho 卡住时会永久阻塞
+    # worker 协程，队列随之无界堆积——发布慢时正是这条链路放大故障。
+    typecho_timeout: int = Field(default=30, description="Typecho XMLRPC 超时（秒）")
 
     # ── CloudFlare ImgBed ─────────────────────────────────────────────────────
     imgbed_enable: bool = Field(default=True)
@@ -73,7 +76,10 @@ class Config(BaseSettings):
     # 此项作为兜底保证漏掉的消息最终被捞回；0 表示禁用。
     periodic_catchup_minutes: int = Field(default=30, description="定期补偿间隔（分钟），0=禁用")
     retry_max: int = Field(default=3, description="发布失败最大自动重试次数")
-    max_posts_per_minute: int = Field(default=20)
+    # 发布限流：两次 newPost/editPost 之间至少间隔 60/该值 秒。catch-up 一次性
+    # 补偿几百条时，不限流会把 Typecho 内部的全表扫描以最快速度打满 MySQL。
+    # 0 表示不限流。
+    max_posts_per_minute: int = Field(default=20, description="每分钟最大发布数，0=不限流")
 
     # ── validators ────────────────────────────────────────────────────────────
 

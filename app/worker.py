@@ -8,6 +8,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from . import filter as filter_mod
@@ -26,6 +27,10 @@ from .publish import TypechoClient, PublishError
 from .utils import content_hash, now_iso
 
 logger = logging.getLogger(__name__)
+
+# 慢操作阈值（秒）
+_SLOW_DEDUP_SEC = 0.1
+_SLOW_PUBLISH_SEC = 2.0
 
 
 async def run(
@@ -125,40 +130,60 @@ async def _process(
         return
     logger.debug("🔍 解析完成 | 片名=%s EP=%s", parsed.name, parsed.episode_raw)
 
-    # 4. 保存消息记录（存原始文本，便于排查）
+    # 5. 查历史发布记录。双向匹配 hash_key / alt_hash_key：AI 与正则是两套独立的
+    #    片名+年份提取器，AI 偶发失败降级后 key 会变，只按主键查会判定"没有历史
+    #    记录"从而重复建文（这正是 typecho_contents 大量 INSERT 的来源）。
+    dedup_started = time.monotonic()
+    hash_key = parsed.hash_key
+    existing = repo.find_post(conn, hash_key, parsed.alt_hash_key)
+    if existing is not None and existing["hash_key"] != hash_key:
+        # 命中的是另一条路径建立的记录 → 沿用它的 key，后续 save_post 更新同一行、
+        # 复用同一个 typecho_cid，走 editPost 而不是 newPost。
+        logger.info("🔗 去重键兜底命中 | 本次=%s 复用历史=%s",
+                    hash_key, existing["hash_key"])
+        hash_key = existing["hash_key"]
+    cid = existing.get("typecho_cid") if existing else None
+    dedup_ms = (time.monotonic() - dedup_started) * 1000
+    logger.info("[DEDUP] key=%s found=%s cid=%s elapsed=%.1fms",
+                hash_key, existing is not None, cid, dedup_ms)
+    if dedup_ms > _SLOW_DEDUP_SEC * 1000:
+        logger.warning("[SLOW_DEDUP] key=%s elapsed=%.0fms", hash_key, dedup_ms)
+
+    # 6. 保存消息记录（存原始文本，便于排查）。落库用解析出的最终 key，
+    #    保证 retry_loop 按 hash_key 回捞原始消息时能找到。
     repo.save_msg(conn, msg.channel, msg.msg_id, msg.msg_date,
-                  msg.text, parsed.hash_key, dataclasses.asdict(parsed))
+                  msg.text, hash_key, dataclasses.asdict(parsed))
 
-    # 5. 查历史发布记录
-    existing = repo.get_post(conn, parsed.hash_key)
+    # 7. content_hash 检查 —— 提前到所有网络调用之前。
+    #    merge 对这三个字段是原样透传（见 merge.py），此处算出的指纹与融合后
+    #    完全一致；内容没变时可以直接跳过图片下载/上传和 TMDB 查询。
+    c_hash = content_hash(parsed.episode_num, parsed.extra_quality, parsed.size_per_ep)
+    if cid and existing.get("content_hash") == c_hash:
+        logger.debug("⏭️  内容无变化跳过 | hash_key=%s", hash_key)
+        return
 
-    # 6. 图片处理（可降级）
+    # 8. 图片处理（可降级）
     image_urls, img_hash_val = await _handle_images(msg, existing, tg_client, cfg)
 
-    # 7. TMDB 查询（带缓存，可降级；短剧/音乐等跳过）
+    # 9. TMDB 查询（带缓存，可降级；短剧/音乐等跳过）
     tmdb_result = None
     if not parsed.skip_tmdb:
         tmdb_result = await _get_tmdb_cached(conn, parsed, cfg)
 
-    # 8. 融合 + 渲染
+    # 10. 融合 + 渲染
     merged = merge_mod.merge(parsed, tmdb_result, image_urls)
     post = render_mod.render(merged)
 
-    # 9. content_hash 检查
-    c_hash = content_hash(merged.episode_num, merged.extra_quality, merged.size_per_ep)
-    cid = existing.get("typecho_cid") if existing else None
-    if cid and existing.get("content_hash") == c_hash:
-        logger.debug("⏭️  内容无变化跳过 | hash_key=%s", parsed.hash_key)
-        return
-
-    # 10. 发布到 Typecho
+    # 11. 发布到 Typecho
     retry_count = (existing or {}).get("retry_count", 0)
+    publish_started = time.monotonic()
     try:
         if cid:
             await publish_client.edit_post(
                 cid, post.title, post.content, post.slug,
                 post.category, post.tags, post.excerpt,
             )
+            action = "update"
             url = (existing or {}).get("typecho_url", "")
             logger.info("🔄 更新成功 | [%s] 《%s》%s cid=%d",
                         msg.channel_title or msg.channel, merged.name, merged.episode_raw, cid)
@@ -167,21 +192,34 @@ async def _process(
                 post.title, post.content, post.slug,
                 post.category, post.tags, post.excerpt,
             )
+            action = "create"
             base = cfg.typecho_xmlrpc_endpoint.rsplit("/action", 1)[0]
             url = f"{base}/archives/{post.slug}.html"
             logger.info("✅ 发布成功 | [%s] 《%s》%s cid=%d",
                         msg.channel_title or msg.channel, merged.name, merged.episode_raw, cid)
 
+        publish_ms = (time.monotonic() - publish_started) * 1000
+        logger.info("[PUBLISH] action=%s key=%s cid=%s cat=%s tags=%d elapsed=%.0fms",
+                    action, hash_key, cid, post.category, len(post.tags), publish_ms)
+        if publish_ms > _SLOW_PUBLISH_SEC * 1000:
+            logger.warning("[SLOW_PUBLISH] action=%s key=%s elapsed=%.0fms",
+                           action, hash_key, publish_ms)
+
+        # 记录"另一条解析路径算出的 key"作为别名：hash_key 被兜底改写时，别名是
+        # 本次自己算出的 key；否则是本次的备用键。两种情况都让下次任一路径直接命中。
+        alias = parsed.hash_key if hash_key != parsed.hash_key else parsed.alt_hash_key
         repo.save_post(
-            conn, parsed.hash_key, cid, url, post.title,
+            conn, hash_key, cid, url, post.title,
             merged.episode_num, c_hash, merged.cover_image_url,
             merged.extra_image_urls, img_hash_val,
             dataclasses.asdict(tmdb_result) if tmdb_result else None,
+            alias,
         )
         await notify.send_success(merged.name, merged.episode_raw, url, cfg)
 
     except PublishError as e:
-        await _handle_failure(conn, parsed.hash_key, merged.name, str(e), retry_count, cfg)
+        logger.warning("[ERROR] stage=publish key=%s error=%s", hash_key, e)
+        await _handle_failure(conn, hash_key, merged.name, str(e), retry_count, cfg)
 
 
 async def _handle_images(
