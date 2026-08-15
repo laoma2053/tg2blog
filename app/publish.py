@@ -8,7 +8,6 @@ import asyncio
 import logging
 import time
 import xmlrpc.client
-from datetime import datetime, timezone
 from functools import partial, lru_cache
 from typing import Any
 
@@ -93,7 +92,7 @@ class TypechoClient:
         self._pwd = cfg.typecho_password
         # 分类缓存：name → id，启动时预加载
         self._category_map: dict[str, str] = {}
-        # 发布限流：只作用于 newPost / editPost，不限制启动时的分类加载
+        # 发布限流：只作用于 newPost / deletePost，不限制启动时的分类加载
         self._limiter = _RateLimiter(cfg.max_posts_per_minute)
 
     # ── 公共方法 ──────────────────────────────────────────────────────────────
@@ -126,9 +125,25 @@ class TypechoClient:
             self._server.metaWeblog.newPost,
             _BLOG_ID, self._user, self._pwd, struct, True,
         )
-        return int(cid)
+        # Typecho 的 XMLRPC 层出错时可能返回 0 / 非数字，直接落库会写出一个
+        # 永远更新不到的 cid，这里挡在写库之前。
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            raise PublishError(f"newPost 返回非法 cid: {cid!r}")
+        if cid <= 0:
+            raise PublishError(f"newPost 返回非法 cid: {cid}")
+        return cid
 
-    async def edit_post(
+    async def delete_post(self, cid: int) -> None:
+        """删除文章。cid 不存在时 Typecho 同样返回 true，可安全重复调用。"""
+        await self._limiter.acquire()
+        await self._call(
+            self._server.blogger.deletePost,
+            _BLOG_ID, int(cid), self._user, self._pwd, True,
+        )
+
+    async def replace_post(
         self,
         cid: int,
         title: str,
@@ -137,14 +152,23 @@ class TypechoClient:
         category: str,
         tags: list[str],
         excerpt: str = "",
-    ) -> None:
-        """更新已有文章"""
-        struct = _build_struct(title, content, slug, category, tags, excerpt)
-        await self._limiter.acquire()
-        await self._call(
-            self._server.metaWeblog.editPost,
-            str(cid), self._user, self._pwd, struct, True,
-        )
+    ) -> int:
+        """
+        更新已有文章 = 删除旧文章 + 用同一个 slug 新建，返回新的 cid。
+
+        不用 metaWeblog.editPost 是因为 Typecho 1.3.0 的 editPost 实际上不更新：
+        它把 cid 塞进 $input 后直接调 PostEdit->writePost()，绕过了 action()
+        → prepare()，$this->cid 从未被填上，EditTrait::publish() 里的 have()
+        恒为 false，于是走 insert() 新建。wp.editPost / blogger.editPost 也都
+        转发到同一条路径，同样无效。已实测：对同一 cid 连发两次 editPost，得到
+        两个新 cid。
+
+        删除会释放旧 slug，新建能重新拿到干净的 slug（已实测），因此固定链接不变。
+        代价：删除成功但新建失败时文章会短暂消失，靠重试补回；重试超限进 dead
+        则需要人工处理，记录仍在 content_posts 里可查。
+        """
+        await self.delete_post(cid)
+        return await self.new_post(title, content, slug, category, tags, excerpt)
 
     # ── 内部工具 ──────────────────────────────────────────────────────────────
 
@@ -179,7 +203,7 @@ def _build_struct(
     tags: list[str],
     excerpt: str = "",
 ) -> dict:
-    """构造 MetaWeblog newPost/editPost 所需的 content struct"""
+    """构造 MetaWeblog newPost 所需的 content struct"""
     return {
         "title": title,
         "description": content,
@@ -190,9 +214,7 @@ def _build_struct(
         "mt_keywords": ",".join(tags),
         # wp_slug 设置自定义 URL 别名
         "wp_slug": slug,
-        # 发布时间使用当前 UTC 时间
-        "dateCreated": xmlrpc.client.DateTime(
-            datetime.now(timezone.utc).strftime("%Y%m%dT%H:%M:%S")
-        ),
+        # 不传 dateCreated：Typecho 会把收到的时间戳按服务器本地时区（CST）解释，
+        # 传 UTC 字符串会让 created 恒早 8 小时。省略时 Typecho 自己取当前时间。
         "post_status": "publish",
     }

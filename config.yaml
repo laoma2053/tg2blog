@@ -10,7 +10,7 @@ channels:
   #- "@djya5"
   - "@Aliyun_4K_Movies"
   - "@Netdisk_Movies"
-  - "@kfcfoodcourt"
+  #- "@kfcfoodcourt"
 
 # ── 主站与导流 ────────────────────────────────────────────────────────────────
 site:

@@ -76,7 +76,7 @@ class Config(BaseSettings):
     # 此项作为兜底保证漏掉的消息最终被捞回；0 表示禁用。
     periodic_catchup_minutes: int = Field(default=30, description="定期补偿间隔（分钟），0=禁用")
     retry_max: int = Field(default=3, description="发布失败最大自动重试次数")
-    # 发布限流：两次 newPost/editPost 之间至少间隔 60/该值 秒。catch-up 一次性
+    # 发布限流：两次发布调用之间至少间隔 60/该值 秒。catch-up 一次性
     # 补偿几百条时，不限流会把 Typecho 内部的全表扫描以最快速度打满 MySQL。
     # 0 表示不限流。
     max_posts_per_minute: int = Field(default=20, description="每分钟最大发布数，0=不限流")

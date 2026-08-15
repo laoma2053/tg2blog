@@ -62,12 +62,12 @@ listen → [queue] → worker._process:
   4. 消息解析（AI 优先 → 正则降级 → ParsedItem）
   5. 查历史发布记录（repo.find_post → content_posts，hash_key/alt_hash_key 双向匹配）
   6. 保存消息记录（repo.save_msg，落库用第5步解析出的最终 key）
-  7. content_hash 比对（episode_num+extra_quality+size_per_ep，无变化则直接返回）
+  7. content_hash 比对（episode_num+extra_quality+size_per_ep，且记录 status='published' 时才直接返回）
   8. 图片处理（fetch → imgbed，img_hash 防重复上传，可降级）
   9. TMDB 查询（带7天缓存，可降级，skip_tmdb 时跳过）
  10. 数据融合（merge.merge → MergedItem）
  11. 文章渲染（render.render → RenderedPost，含 JSON-LD）
- 12. Typecho 发布（MetaWeblog XMLRPC new_post / edit_post，受 max_posts_per_minute 限流）
+ 12. Typecho 发布（MetaWeblog XMLRPC new_post / replace_post，受 max_posts_per_minute 限流）
  13. 保存发布记录（repo.save_post）
 ```
 
@@ -120,7 +120,7 @@ AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。
 2. `alt_hash_key = 本次 key` —— 历史记录由另一条解析路径创建，本次 key 是它的别名
 3. `hash_key 或 alt_hash_key = 本次备用键` —— 反向匹配
 
-命中 2/3 时 worker 会**改用历史记录的 `hash_key`** 继续后续流程，从而更新同一行、复用同一个 `typecho_cid`，走 `editPost` 而不是 `newPost`。`save_post` 每次都把"另一条路径的 key"写回 `alt_hash_key`（本次为空时保留历史值，避免降级路径抹掉已建立的别名）。绕过这套查找会直接导致 Typecho 重复建文。
+命中 2/3 时 worker 会**改用历史记录的 `hash_key`** 继续后续流程，从而更新同一行、复用同一个 `typecho_cid`，走更新分支而不是新建。`save_post` 每次都把"另一条路径的 key"写回 `alt_hash_key`（本次为空时保留历史值，避免降级路径抹掉已建立的别名）。绕过这套查找会直接导致 Typecho 重复建文。
 
 **图片去重**：`tg_img_hash` 存上次上传图片的 MD5，新消息图片 MD5 相同则直接复用旧 URL，不重复上传。
 
@@ -130,6 +130,12 @@ AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。
 - 失败记录写入 `content_posts`，`status=failed`，`next_retry_at` 按指数退避（`2^n` 分钟）递增。
 - `retry_loop` 每5分钟扫描到期记录，重新入队时 `message=None`（跳过图片重下载，直接复用 `content_posts` 中的历史 URL）。
 - 超过 `retry_max`（默认3次）进入 `status=dead`，触发飞书告警，停止自动重试。
+
+**第 7 步的 content_hash 短路必须带 `status='published'` 条件**。失败记录的
+`content_hash` 也可能与本次相同（内容变化后是发布环节才失败的），不加这个条件时重试
+会在第 7 步静默返回，走不到发布 → `_handle_failure` 不执行 → `retry_count` 不增长 →
+`get_retry_due` 的 `retry_count < retry_max` 恒成立 → `retry_max` 死信兜底永不触发。
+症状是「积压=N 恒定不降、每 5 分钟无效回捞一次」，且每轮白烧一次 AI 解析请求。
 
 ## 启动序列（main.py）
 
@@ -160,7 +166,11 @@ AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。
 
 **Slug 生成**：`pypinyin` 拼音转写，格式 `{拼音}-{year}-4k`（例：`tai-ping-nian-2026-4k`）。禁止用 URL-encoded 中文作 slug。
 
-**Typecho 协议**：使用 MetaWeblog XMLRPC（`metaWeblog.newPost` / `metaWeblog.editPost`），`xmlrpc.client` 在线程池（`run_in_executor`）中执行以避免阻塞 asyncio 事件循环。所有 XMLRPC 异常统一包装为 `PublishError` 供 worker 捕获后进入重试。
+**Typecho 协议**：使用 MetaWeblog XMLRPC（`metaWeblog.newPost` / `blogger.deletePost`），`xmlrpc.client` 在线程池（`run_in_executor`）中执行以避免阻塞 asyncio 事件循环。所有 XMLRPC 异常统一包装为 `PublishError` 供 worker 捕获后进入重试。
+
+**更新文章 = 删旧建新，不用 `editPost`**。Typecho 1.3.0 的 `metaWeblog.editPost` 根本不更新：它把 cid 塞进 `$input` 后直接调 `PostEdit->writePost()`，绕过了 `action()` → `prepare()`，`$this->cid` 从未被填上，于是 `EditTrait::publish()` 里的 `have()` 恒为 false，走 `insert()` 新建。`wp.editPost` / `wp.editPage` / `blogger.editPost` 全部转发到同一条路径，同样无效——这是上游缺陷，**不修改 Typecho 核心 PHP**。因此 `publish.replace_post` 先 `blogger.deletePost` 再 `new_post`：删除会释放旧 slug，新建重新拿到干净的 slug，固定链接不变（已实测）。副作用是 **`typecho_cid` 每次更新都会变**，`content_posts.typecho_cid` 随之刷新；`deletePost` 对不存在的 cid 也返回 true，所以"删成功→建失败"后重试是安全的。排查站上重复文章时，先确认是不是这条链路，再怀疑 `hash_key` 漂移。
+
+**不传 `dateCreated`**：Typecho 把收到的时间戳按服务器本地时区（CST）解释，传 UTC 字符串会让 `created` 恒早 8 小时。省略该字段让 Typecho 自己取当前时间。
 
 **分类体系**：`render._auto_category` 产出 `剧集 / 电影 / 综艺 / 动漫 / 音乐 / 综合` 六选一，优先级为 TG 前置类型标签（`type_hint`）> 标签/标题关键词推断 > `media_type`。这些分类名必须在 Typecho 后台已存在，否则 Typecho 会回落到默认分类。`render._CAT_SLUG` 另维护一份分类→URL slug 映射，仅用于 JSON-LD 面包屑。
 
@@ -199,16 +209,16 @@ AI 只要偶发失败降级一次，`hash_key` 就会在两个值之间切换。
 ## Typecho 侧的 MySQL 负载
 
 本项目**从不直连 MySQL**（依赖里没有任何 MySQL 驱动），XMLRPC 调用面只有三个方法：
-`metaWeblog.getCategories`（启动一次）/ `newPost` / `editPost`。查重完全在本地 SQLite
-完成，不存在"拉取全部历史文章到内存遍历"这类调用。
+`metaWeblog.getCategories`（启动一次）/ `newPost` / `blogger.deletePost`。查重完全在本地
+SQLite 完成，不存在"拉取全部历史文章到内存遍历"这类调用。
 
 因此在 `b_zhuiju_us` 库里抓到的无索引 SQL（`typecho_contents` 按
 `type+parent+authorId` 扫全表、`typecho_metas` 按 `type+name` 扫全表）**全部由 Typecho
-核心 PHP 在处理 newPost/editPost 时自己发出**，客户端改不掉。能做的只有两件事：
+核心 PHP 在处理 newPost 时自己发出**，客户端改不掉。能做的只有两件事：
 
 1. 补索引 —— DDL、EXPLAIN 对比、回滚语句见 `doc/sql/typecho_index.sql`
-2. 降低调用频率 —— `MAX_POSTS_PER_MINUTE` 限流（`publish._RateLimiter`，只作用于
-   newPost/editPost）+ `find_post` 双向去重减少无谓的 newPost
+2. 降低调用频率 —— `MAX_POSTS_PER_MINUTE` 限流（`publish._RateLimiter`，作用于
+   newPost 和 deletePost）+ `find_post` 双向去重减少无谓的 newPost
 
 排查这类问题时，先确认 SQL 的发出方是谁，再决定改哪一层。**不要修改 Typecho 核心
 PHP**。
@@ -220,7 +230,7 @@ PHP**。
 ## 验收关键场景
 
 1. 同一 TG 消息重复触发 → 不重复发文（消息级去重）
-2. TG 消息 EP 从 24 编辑为 25 → 更新同一篇文章（编辑消息触发 content_hash 变更）
+2. TG 消息 EP 从 24 编辑为 25 → 站上仍只有一篇、URL 不变（cid 会变，见"更新文章 = 删旧建新"）
 3. 关闭 `TMDB_ENABLE` / `IMGBED_ENABLE` / `AI_PARSE_ENABLE` → 系统仍能发布纯文本文章
 4. Typecho 发布失败 → 按指数退避重试，超限后触发飞书告警
 5. AI 解析成功建文后，下一条消息 AI 失败降级正则（hash_key 变化）→ 仍更新同一篇文章，`content_posts` 不新增行

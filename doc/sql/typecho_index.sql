@@ -1,6 +1,12 @@
 -- ============================================================================
 -- Typecho 侧索引优化 —— 针对 tg2blog 自动发文引发的 MySQL 全表扫描
 --
+-- ⚠️ 执行位置：Typecho 博客所在的服务器（宝塔面板那台，141.11.77.151），
+--    不是 tg2blog 所在的 VM116739。两者是不同机器：
+--      VM116739       → tg2blog 容器 + 自己的 SQLite（迁移随容器启动自动完成）
+--      141.11.77.151  → 宝塔 + Typecho + MySQL b_zhuiju_us（本文件在这里执行）
+--    tg2blog 跨机通过 HTTPS 调用 https://b.zhuiju.us/action/xmlrpc 发布。
+--
 -- 背景：tg2blog 从不直连 MySQL，只调用 3 个 XMLRPC 方法
 --       （getCategories / newPost / editPost）。performance_schema 里抓到的
 --       三条无索引 SQL 全部由 Typecho 核心 PHP 在处理 newPost/editPost 时
@@ -41,19 +47,15 @@ EXPLAIN SELECT mid FROM b_zhuiju_us.typecho_metas WHERE type='category' AND name
 
 -- ── 第 2 步：创建索引 ──────────────────────────────────────────────────────
 
--- [索引 1] typecho_contents
+-- [索引 1] typecho_contents —— ❌ 已放弃，不要建，别再照着这段执行
 -- 目标 SQL：WHERE type=? AND (parent=? OR parent IS NULL) AND authorId=? ORDER BY created DESC
--- 现状：原生 schema 只有 PRIMARY(cid) / UNIQUE(slug) / KEY(created)，该谓词无索引可用，
---       每次 newPost 全表扫描约 14600 行，且 SELECT * 会把 longtext 正文一并读出。
--- 列序理由：
---   - type 打头：目标查询 rows_sent=0，说明命中的 type 分桶几乎为空（post_draft），
---     选择性最高，索引第一列就能把范围切到 0 行。
---   - authorId 次之：单作者站选择性≈1，放首位等于没过滤（ChatGPT 建议的
---     (authorId, type, ...) 列序在此数据分布下是错的）。
---   - parent 第三：因为是 OR ... IS NULL，只能做索引条件下推，不能限定范围。
---   - created 末尾：满足 ORDER BY，避免 filesort。
-ALTER TABLE b_zhuiju_us.typecho_contents
-  ADD INDEX idx_tg2blog_type_author (type, authorId, parent, created);
+-- 放弃理由（实测，非推测）：第 0 步的数据分布查询显示本库 type 只有 'post' 一个值、
+--   authorId 只有 1 一个值。前导两列选择性为零，索引扫描量等于全表扫描量还多一次回表，
+--   优化器会直接忽略它。留着只会拖慢 newPost/editPost 的写入。
+--   真正的降负载手段是索引 2、索引 3 + 消除重复建文（见 typecho_dedup_cleanup.sql）。
+--
+-- ALTER TABLE b_zhuiju_us.typecho_contents
+--   ADD INDEX idx_tg2blog_type_author (type, authorId, parent, created);
 
 -- [索引 2] typecho_metas
 -- 目标 SQL：WHERE type=? AND name=? （分类/标签按名字解析成 mid）
@@ -90,7 +92,6 @@ EXPLAIN SELECT mid FROM b_zhuiju_us.typecho_metas WHERE type='category' AND name
 
 
 -- ── 第 4 步：回滚（只删本次新增的索引，不动 Typecho 原生索引）─────────────
--- ALTER TABLE b_zhuiju_us.typecho_contents      DROP INDEX idx_tg2blog_type_author;
 -- ALTER TABLE b_zhuiju_us.typecho_metas         DROP INDEX idx_tg2blog_type_name;
 -- ALTER TABLE b_zhuiju_us.typecho_relationships DROP INDEX idx_tg2blog_mid;
 

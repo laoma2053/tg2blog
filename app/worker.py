@@ -138,7 +138,7 @@ async def _process(
     existing = repo.find_post(conn, hash_key, parsed.alt_hash_key)
     if existing is not None and existing["hash_key"] != hash_key:
         # 命中的是另一条路径建立的记录 → 沿用它的 key，后续 save_post 更新同一行、
-        # 复用同一个 typecho_cid，走 editPost 而不是 newPost。
+        # 复用同一个 typecho_cid，走更新分支（删旧建新）而不是直接 newPost。
         logger.info("🔗 去重键兜底命中 | 本次=%s 复用历史=%s",
                     hash_key, existing["hash_key"])
         hash_key = existing["hash_key"]
@@ -157,8 +157,15 @@ async def _process(
     # 7. content_hash 检查 —— 提前到所有网络调用之前。
     #    merge 对这三个字段是原样透传（见 merge.py），此处算出的指纹与融合后
     #    完全一致；内容没变时可以直接跳过图片下载/上传和 TMDB 查询。
+    #    必须同时要求 status='published'：失败记录的 content_hash 也可能与本次
+    #    相同（内容变化后发布环节才失败），若不加这个条件，重试会在这里静默
+    #    返回——永远走不到第 11 步发布，_handle_failure 不执行，retry_count 不
+    #    增长，get_retry_due 的 retry_count < retry_max 恒成立，retry_max 死信
+    #    兜底永不触发。表现为该记录每 5 分钟被无效回捞一次、积压数恒定不降。
     c_hash = content_hash(parsed.episode_num, parsed.extra_quality, parsed.size_per_ep)
-    if cid and existing.get("content_hash") == c_hash:
+    if (cid
+            and existing.get("status") == "published"
+            and existing.get("content_hash") == c_hash):
         logger.debug("⏭️  内容无变化跳过 | hash_key=%s", hash_key)
         return
 
@@ -179,24 +186,28 @@ async def _process(
     publish_started = time.monotonic()
     try:
         if cid:
-            await publish_client.edit_post(
+            # 更新走"删旧建新"，cid 每次都会变，见 publish.replace_post
+            old_cid = cid
+            cid = await publish_client.replace_post(
                 cid, post.title, post.content, post.slug,
                 post.category, post.tags, post.excerpt,
             )
             action = "update"
-            url = (existing or {}).get("typecho_url", "")
-            logger.info("🔄 更新成功 | [%s] 《%s》%s cid=%d",
-                        msg.channel_title or msg.channel, merged.name, merged.episode_raw, cid)
+            logger.info("🔄 更新成功 | [%s] 《%s》%s cid=%d→%d",
+                        msg.channel_title or msg.channel, merged.name,
+                        merged.episode_raw, old_cid, cid)
         else:
             cid = await publish_client.new_post(
                 post.title, post.content, post.slug,
                 post.category, post.tags, post.excerpt,
             )
             action = "create"
-            base = cfg.typecho_xmlrpc_endpoint.rsplit("/action", 1)[0]
-            url = f"{base}/archives/{post.slug}.html"
             logger.info("✅ 发布成功 | [%s] 《%s》%s cid=%d",
                         msg.channel_title or msg.channel, merged.name, merged.episode_raw, cid)
+
+        # slug 不随更新变化，两条分支的 URL 算法一致
+        base = cfg.typecho_xmlrpc_endpoint.rsplit("/action", 1)[0]
+        url = f"{base}/archives/{post.slug}.html"
 
         publish_ms = (time.monotonic() - publish_started) * 1000
         logger.info("[PUBLISH] action=%s key=%s cid=%s cat=%s tags=%d elapsed=%.0fms",
