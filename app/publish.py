@@ -125,8 +125,9 @@ class TypechoClient:
             self._server.metaWeblog.newPost,
             _BLOG_ID, self._user, self._pwd, struct, True,
         )
-        # Typecho 的 XMLRPC 层出错时可能返回 0 / 非数字，直接落库会写出一个
-        # 永远更新不到的 cid，这里挡在写库之前。
+        # Typecho 的 XMLRPC 层出错时可能返回 0 / 非数字。这个校验现在比以前更重要：
+        # 非法 cid 一旦落进 content_posts，worker 第 7 步就会认定"这部影片已发布"
+        # 而永久跳过它——既不会重发，也不会进重试队列，等于静默丢片。
         try:
             cid = int(cid)
         except (TypeError, ValueError):

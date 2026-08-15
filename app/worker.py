@@ -54,7 +54,12 @@ async def run(
 async def retry_loop(
     queue: asyncio.Queue, conn: object, cfg: Config
 ) -> None:
-    """每5分钟扫描到期失败记录，重新入队（重试时 message=None，跳过图片下载）"""
+    """
+    每5分钟扫描到期失败记录。
+
+    两种处置：站上已有文章的（typecho_cid 非空）直接结算，其余重新入队重发
+    （message=None，不重下图片）。
+    """
     while True:
         await asyncio.sleep(300)
         due = repo.get_retry_due(conn, now_iso(), cfg.retry_max)
@@ -115,7 +120,9 @@ async def _process(
     #    listen.py 仍注册 MessageEdited：极少数情况下原始版本我们没见过（启动前
     #    就被编辑过、或 catch-up 按 msg_id 边界漏掉），那时它应当被当作新消息处理。
     if not msg.is_retry and repo.msg_exists(conn, msg.channel, msg.msg_id):
-        logger.debug("⏭️  已处理跳过 | [%s] msg_id=%d", msg.channel_title or msg.channel, msg.msg_id)
+        kind = "编辑消息" if msg.is_edit else "重复消息"
+        logger.debug("⏭️  已处理跳过 | [%s] msg_id=%d (%s)",
+                     msg.channel_title or msg.channel, msg.msg_id, kind)
         return
 
     # 2. 广告过滤

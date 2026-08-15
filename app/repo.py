@@ -32,7 +32,7 @@ def save_msg(
     parsed: dict | None = None,
     is_ad: bool = False,
 ) -> None:
-    """保存 TG 消息记录；若已存在则更新 raw_text 和 parsed（处理编辑消息）"""
+    """保存 TG 消息记录；若已存在则更新 raw_text 和 parsed（重试时会重复落同一条）"""
     now = now_iso()
     conn.execute(
         """
