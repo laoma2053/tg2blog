@@ -92,7 +92,7 @@ class TypechoClient:
         self._pwd = cfg.typecho_password
         # 分类缓存：name → id，启动时预加载
         self._category_map: dict[str, str] = {}
-        # 发布限流：只作用于 newPost / deletePost，不限制启动时的分类加载
+        # 发布限流：只作用于 newPost，不限制启动时的分类加载
         self._limiter = _RateLimiter(cfg.max_posts_per_minute)
 
     # ── 公共方法 ──────────────────────────────────────────────────────────────
@@ -134,41 +134,6 @@ class TypechoClient:
         if cid <= 0:
             raise PublishError(f"newPost 返回非法 cid: {cid}")
         return cid
-
-    async def delete_post(self, cid: int) -> None:
-        """删除文章。cid 不存在时 Typecho 同样返回 true，可安全重复调用。"""
-        await self._limiter.acquire()
-        await self._call(
-            self._server.blogger.deletePost,
-            _BLOG_ID, int(cid), self._user, self._pwd, True,
-        )
-
-    async def replace_post(
-        self,
-        cid: int,
-        title: str,
-        content: str,
-        slug: str,
-        category: str,
-        tags: list[str],
-        excerpt: str = "",
-    ) -> int:
-        """
-        更新已有文章 = 删除旧文章 + 用同一个 slug 新建，返回新的 cid。
-
-        不用 metaWeblog.editPost 是因为 Typecho 1.3.0 的 editPost 实际上不更新：
-        它把 cid 塞进 $input 后直接调 PostEdit->writePost()，绕过了 action()
-        → prepare()，$this->cid 从未被填上，EditTrait::publish() 里的 have()
-        恒为 false，于是走 insert() 新建。wp.editPost / blogger.editPost 也都
-        转发到同一条路径，同样无效。已实测：对同一 cid 连发两次 editPost，得到
-        两个新 cid。
-
-        删除会释放旧 slug，新建能重新拿到干净的 slug（已实测），因此固定链接不变。
-        代价：删除成功但新建失败时文章会短暂消失，靠重试补回；重试超限进 dead
-        则需要人工处理，记录仍在 content_posts 里可查。
-        """
-        await self.delete_post(cid)
-        return await self.new_post(title, content, slug, category, tags, excerpt)
 
     # ── 内部工具 ──────────────────────────────────────────────────────────────
 

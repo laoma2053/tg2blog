@@ -195,6 +195,30 @@ def mark_dead(conn: sqlite3.Connection, hash_key: str, error: str) -> None:
     conn.commit()
 
 
+def mark_settled(conn: sqlite3.Connection, hash_key: str) -> None:
+    """
+    把历史失败记录结算为已发布，停止重试。
+
+    用于「记录里已有 typecho_cid」的场景：文章其实已经在站上，只是旧代码在
+    更新环节失败留下了 status='failed'。不再更新历史文章之后，这类记录既不会
+    被重发（worker 第 6 步后按 typecho_cid 跳过），status 又停在 failed，
+    get_retry_due 会每 5 分钟无效回捞一次、永不收敛。
+
+    只改状态字段，不碰 typecho_cid / content_hash 等业务字段。
+    """
+    now = now_iso()
+    conn.execute(
+        """
+        UPDATE content_posts
+        SET status='published', retry_count=0, next_retry_at=NULL,
+            error_last=NULL, updated_at=?
+        WHERE hash_key=?
+        """,
+        (now, hash_key),
+    )
+    conn.commit()
+
+
 def get_retry_due(
     conn: sqlite3.Connection, now: str, max_retry: int, limit: int = 20
 ) -> list[dict[str, Any]]:

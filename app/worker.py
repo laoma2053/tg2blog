@@ -64,6 +64,15 @@ async def retry_loop(
             logger.info("🔁 待重试记录 | 本轮=%d 积压=%d",
                         len(due), repo.count_retry_pending(conn, cfg.retry_max))
         for record in due:
+            if record.get("typecho_cid"):
+                # 文章其实已经在站上（旧代码更新失败留下的 failed 记录）。不再更新
+                # 历史文章之后它永远不会被重发，status 却停在 failed —— 不结算的话
+                # get_retry_due 每 5 分钟无效回捞一次、积压恒定不降。放在这里结算
+                # 而不是等 _process，是为了连那一轮的 AI 解析也省掉。
+                repo.mark_settled(conn, record["hash_key"])
+                logger.info("✅ 站上已有文章，结算历史失败记录 | hash_key=%s cid=%s",
+                            record["hash_key"], record["typecho_cid"])
+                continue
             raw = _latest_raw_msg(conn, record["hash_key"])
             if not raw:
                 # tg_messages 里找不到原始消息，重试无从下手。必须标记 dead，
@@ -99,8 +108,13 @@ async def _process(
     conn: object,
     cfg: Config,
 ) -> None:
-    # 1. 消息级去重（编辑消息和重试不跳过：前者需要更新文章，后者需要重发）
-    if not msg.is_edit and not msg.is_retry and repo.msg_exists(conn, msg.channel, msg.msg_id):
+    # 1. 消息级去重（重试不跳过，需要重发）。
+    #    编辑消息与原消息共用同一个 msg_id，此处不再为它开口子：不做历史文章更新
+    #    之后，已处理消息的编辑版本没有任何处理价值，在这里拦掉可以连 AI 解析、
+    #    图片下载、TMDB 查询一起省掉（影视频道里编辑消息占比很高，这是省钱大头）。
+    #    listen.py 仍注册 MessageEdited：极少数情况下原始版本我们没见过（启动前
+    #    就被编辑过、或 catch-up 按 msg_id 边界漏掉），那时它应当被当作新消息处理。
+    if not msg.is_retry and repo.msg_exists(conn, msg.channel, msg.msg_id):
         logger.debug("⏭️  已处理跳过 | [%s] msg_id=%d", msg.channel_title or msg.channel, msg.msg_id)
         return
 
@@ -137,8 +151,8 @@ async def _process(
     hash_key = parsed.hash_key
     existing = repo.find_post(conn, hash_key, parsed.alt_hash_key)
     if existing is not None and existing["hash_key"] != hash_key:
-        # 命中的是另一条路径建立的记录 → 沿用它的 key，后续 save_post 更新同一行、
-        # 复用同一个 typecho_cid，走更新分支（删旧建新）而不是直接 newPost。
+        # 命中的是另一条路径建立的记录 → 沿用它的 key，让后续 save_post 落在同一行，
+        # 不会因为 key 漂移而新插一行、进而再发一篇重复文章。
         logger.info("🔗 去重键兜底命中 | 本次=%s 复用历史=%s",
                     hash_key, existing["hash_key"])
         hash_key = existing["hash_key"]
@@ -154,20 +168,21 @@ async def _process(
     repo.save_msg(conn, msg.channel, msg.msg_id, msg.msg_date,
                   msg.text, hash_key, dataclasses.asdict(parsed))
 
-    # 7. content_hash 检查 —— 提前到所有网络调用之前。
-    #    merge 对这三个字段是原样透传（见 merge.py），此处算出的指纹与融合后
-    #    完全一致；内容没变时可以直接跳过图片下载/上传和 TMDB 查询。
-    #    必须同时要求 status='published'：失败记录的 content_hash 也可能与本次
-    #    相同（内容变化后发布环节才失败），若不加这个条件，重试会在这里静默
-    #    返回——永远走不到第 11 步发布，_handle_failure 不执行，retry_count 不
-    #    增长，get_retry_due 的 retry_count < retry_max 恒成立，retry_max 死信
-    #    兜底永不触发。表现为该记录每 5 分钟被无效回捞一次、积压数恒定不降。
-    c_hash = content_hash(parsed.episode_num, parsed.extra_quality, parsed.size_per_ep)
-    if (cid
-            and existing.get("status") == "published"
-            and existing.get("content_hash") == c_hash):
-        logger.debug("⏭️  内容无变化跳过 | hash_key=%s", hash_key)
+    # 7. 影片级跳过：这部影片已经有文章了就到此为止，不做任何更新。
+    #    第 1 步只拦得住"同一条消息的编辑版本"；同一部影片换个频道重发、或以另一条
+    #    消息再来一次时 msg_id 不同，得靠这里拦。必须放在第 6 步之后 —— 提前 return
+    #    会让 tg_messages 不落行，msg_exists 下次拦不住、catch-up 的 min_id 边界也
+    #    推不动，同一条消息每次重启都要重新解析一遍。
+    #
+    #    判据是 typecho_cid 非空，不能用 status：mark_failed 是 INSERT ... ON
+    #    CONFLICT，首次发布失败时会建行且 typecho_cid 为 NULL。按 status 判会把
+    #    "从没成功发出去过"的记录也跳掉，它们将永远发不出去。
+    if cid:
+        logger.info("⏭️  已发布跳过 | [%s]《%s》cid=%s",
+                    msg.channel_title or msg.channel, parsed.name, cid)
         return
+
+    c_hash = content_hash(parsed.episode_num, parsed.extra_quality, parsed.size_per_ep)
 
     # 8. 图片处理（可降级）
     image_urls, img_hash_val = await _handle_images(msg, existing, tg_client, cfg)
@@ -181,40 +196,25 @@ async def _process(
     merged = merge_mod.merge(parsed, tmdb_result, image_urls)
     post = render_mod.render(merged)
 
-    # 11. 发布到 Typecho
+    # 11. 发布到 Typecho。只有新建一条路径 —— 已有文章的影片在第 7 步就返回了。
     retry_count = (existing or {}).get("retry_count", 0)
     publish_started = time.monotonic()
     try:
-        if cid:
-            # 更新走"删旧建新"，cid 每次都会变，见 publish.replace_post
-            old_cid = cid
-            cid = await publish_client.replace_post(
-                cid, post.title, post.content, post.slug,
-                post.category, post.tags, post.excerpt,
-            )
-            action = "update"
-            logger.info("🔄 更新成功 | [%s] 《%s》%s cid=%d→%d",
-                        msg.channel_title or msg.channel, merged.name,
-                        merged.episode_raw, old_cid, cid)
-        else:
-            cid = await publish_client.new_post(
-                post.title, post.content, post.slug,
-                post.category, post.tags, post.excerpt,
-            )
-            action = "create"
-            logger.info("✅ 发布成功 | [%s] 《%s》%s cid=%d",
-                        msg.channel_title or msg.channel, merged.name, merged.episode_raw, cid)
+        cid = await publish_client.new_post(
+            post.title, post.content, post.slug,
+            post.category, post.tags, post.excerpt,
+        )
+        logger.info("✅ 发布成功 | [%s] 《%s》%s cid=%d",
+                    msg.channel_title or msg.channel, merged.name, merged.episode_raw, cid)
 
-        # slug 不随更新变化，两条分支的 URL 算法一致
         base = cfg.typecho_xmlrpc_endpoint.rsplit("/action", 1)[0]
         url = f"{base}/archives/{post.slug}.html"
 
         publish_ms = (time.monotonic() - publish_started) * 1000
-        logger.info("[PUBLISH] action=%s key=%s cid=%s cat=%s tags=%d elapsed=%.0fms",
-                    action, hash_key, cid, post.category, len(post.tags), publish_ms)
+        logger.info("[PUBLISH] key=%s cid=%s cat=%s tags=%d elapsed=%.0fms",
+                    hash_key, cid, post.category, len(post.tags), publish_ms)
         if publish_ms > _SLOW_PUBLISH_SEC * 1000:
-            logger.warning("[SLOW_PUBLISH] action=%s key=%s elapsed=%.0fms",
-                           action, hash_key, publish_ms)
+            logger.warning("[SLOW_PUBLISH] key=%s elapsed=%.0fms", hash_key, publish_ms)
 
         # 记录"另一条解析路径算出的 key"作为别名：hash_key 被兜底改写时，别名是
         # 本次自己算出的 key；否则是本次的备用键。两种情况都让下次任一路径直接命中。
